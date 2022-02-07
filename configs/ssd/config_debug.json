@@ -1,0 +1,20 @@
+{
+	"epochs_pretrain_model": 1,
+	"epochs": 1,
+	"loss_init": "ssd",
+	"alpha": 0.01,
+	"reg_weight": 1000.0,
+	"lr": 0.001,
+	"tau": 0.1,
+	"batch_size": 1,
+	"no_samples_per_epoch": 1,
+	"no_samples_SGLD": 2,
+	"no_samples_SGLD_burn_in": 1,
+	"no_workers": 4,
+	"dims": [160, 192, 224],
+	"cps": [3, 3, 3],
+	"log_period": 1,
+	"val_period": 1,
+	"im_pairs_train": "",
+	"im_pairs_val": "/vol/biodata/data/learn2reg/2021/task03/pairs_val.csv"
+}
