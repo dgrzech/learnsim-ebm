@@ -8,7 +8,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
+import wandb
 
+import utils
 from utils import LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet, calc_dsc, init_grid_im, write_json
 
 DEVICE = torch.device('cuda:0')
@@ -181,10 +183,10 @@ def train(args):
     batch_size, no_workers, no_samples_per_epoch = config['batch_size'], config['no_workers'], config['no_samples_per_epoch']
     save_paths_dict = {'run_dir': args.out}
 
-    dataset_train = OasisDataset(save_paths_dict, config['im_pairs_train'], dims)
+    dataset_train = OasisDataset(save_paths_dict, config['im_pairs_train'], dims, config['data_path'])
     dataloader_train = Learn2RegDataLoader(dataset_train, batch_size, no_workers, no_samples_per_epoch)
 
-    dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims)
+    dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
     dataloader_val = Learn2RegDataLoader(dataset_val, batch_size, no_workers)
 
     structures_dict = dataset_train.structures_dict
@@ -277,6 +279,19 @@ def train(args):
                     writer.add_images('pretrain_model/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
+                    wandb_data = {'pretrain_model': {'loss_data': data_term.item(),
+                                                     'loss_regularisation': reg_weight * reg_term.item(),
+                                                     'loss_registration': loss_registration.item(),
+                                                     'fixed': utils.plot_tensor(fixed['im']),
+                                                     'moving': utils.plot_tensor(moving['im']),
+                                                     'moving_warped': utils.plot_tensor(moving_warped),
+                                                     'transformation': utils.plot_tensor(grid_warped)}}
+
+                    if not args.baseline:
+                        wandb_data['pretrain_model']['loss_similarity'] = loss_similarity.item()
+
+                    wandb.log(wandb_data)
+
             GLOBAL_STEP += 1
 
         scheduler_sim_pretraining.step()
@@ -311,17 +326,25 @@ def train(args):
                         data_term_pred = sim(enc(input_warped))
                         loss_val_similarity += F.l1_loss(data_term_pred, data_term)
 
+
                 # tensorboard
                 writer.add_scalar('pretrain_model/val/loss_registration', loss_val_registration.item() / len(dataloader_val), GLOBAL_STEP)
-
-                if not args.baseline:
-                    writer.add_scalar('pretrain_model/val/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
 
                 dsc_mean = torch.mean(dsc, dim=0)
                 writer.add_scalar('pretrain_model/val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
 
+                wandb_data = {'pretrain_val': {
+                    'loss_registration': loss_val_registration.item(),
+                    'metric_dsc_avg': torch.mean(dsc_mean).item()
+                }}
+
+                if not args.baseline:
+                    writer.add_scalar('pretrain_model/val/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
+                    wandb_data['pretrain_val']['loss_similarity'] = loss_val_similarity.item()
+
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'pretrain_model/val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
+                    wandb_data['pretrain_val'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
 
         save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
                    scheduler_sim_pretraining, scheduler_sim)
@@ -410,6 +433,19 @@ def train(args):
                     writer.add_images('train/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('train/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
+                    wandb_data = {'train': {'loss_data': data_term.item(),
+                                              'loss_regularisation': reg_weight * reg_term.item(),
+                                              'loss_registration': loss_registration.item(),
+                                              'loss_similarity': loss_similarity.item(),
+                                              'loss': loss.item(),
+                                              'fixed': utils.plot_tensor(fixed['im']),
+                                              'moving': utils.plot_tensor(moving['im']),
+                                              'moving_warped': utils.plot_tensor(moving_warped),
+                                              'transformation': utils.plot_tensor(grid_warped)
+                                            }
+                                  }
+                    wandb.log(wandb_data)
+
             GLOBAL_STEP += 1
 
         scheduler_sim.step()
@@ -433,8 +469,14 @@ def train(args):
                 dsc_mean = torch.mean(dsc, dim=0)
                 writer.add_scalar('val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
 
+                wandb_data = {'validation': {
+                    'metric_dsc_avg': torch.mean(dsc_mean).item()
+                }}
+
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
+                    wandb_data['validation'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
+
 
         save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
                    scheduler_sim_pretraining, scheduler_sim)
@@ -447,9 +489,14 @@ if __name__ == '__main__':
     parser.add_argument('--baseline', action='store_true', default=False, help='')
     parser.add_argument('--exp-name', default=None, help='experiment name')
     parser.add_argument('--resume', default=None, help='path to a model checkpoint')
+    parser.add_argument('--wandb-key', type=str, required=True, help='key to login to your wandb account')
 
     # logging args
     parser.add_argument('--out', default='saved', help='output root directory')
 
     args = parser.parse_args()
+
+    wandb.login(key=args.wandb_key)
+    wandb.init(project='learsim-ebm', config=args, entity='mfazampour')
+
     train(args)

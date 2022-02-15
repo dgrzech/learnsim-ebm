@@ -3,6 +3,7 @@ from pathlib import Path
 
 import math
 import torch
+from matplotlib import pyplot as plt
 
 
 def add_noise_Langevin(field, sigma, tau):
@@ -78,3 +79,13 @@ def write_json(content, fname):
     fname = Path(fname)
     with fname.open('wt') as handle:
         json.dump(content, handle, indent=4, sort_keys=False)
+
+
+def plot_tensor(tensor: torch.Tensor):
+    tensor_ = tensor.detach().cpu()
+    fig = plt.figure()
+    fig.add_subplot()
+    fig.axes[0].axes.xaxis.set_visible(False)
+    fig.axes[0].axes.yaxis.set_visible(False)
+    fig.axes[0].imshow(tensor_[0:1, 0:1, tensor_.size(2) // 2, ...].squeeze(), cmap='gray')
+    return fig

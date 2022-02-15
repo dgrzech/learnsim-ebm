@@ -25,7 +25,7 @@ class BaseImageRegistrationDataset(Dataset):
         self.dims, self.structures_dict = dims, structures_dict
 
         self.im_filename, self.mask_filename, self.seg_filename = im_filename, mask_filename, seg_filename
-        self.im_pairs = pd.read_csv(im_pairs, names=['fixed', 'moving']).applymap(str)
+        self.im_pairs = pd.read_csv(im_pairs, names=['fixed', 'moving'], skiprows=1).applymap(str)
 
         self.__set_im_spacing(), self.__set_padding()
 
@@ -34,7 +34,7 @@ class BaseImageRegistrationDataset(Dataset):
 
     @property
     def dims_im(self):
-        return 1, *self.dims
+        return (1, *self.dims)
 
     """
     images, masks, and segmentations
@@ -166,8 +166,9 @@ structures_dict_35 = {'left_cerebral_white_matter': 1,
 
 
 class OasisDataset(BaseImageRegistrationDataset):
-    def __init__(self, save_paths, im_pairs, dims):
-        data_path = '/vol/biodata/data/learn2reg/2021/task03'
+    def __init__(self, save_paths, im_pairs, dims, data_path=''):
+        if data_path == '':
+            data_path = '/vol/biodata/data/learn2reg/2021/task03'
         im_filename, seg_filename, mask_filename = 'aligned_norm.nii.gz', 'aligned_seg35.nii.gz', ''
         structures_dict = structures_dict_35  # segmentation IDs
         im_pairs = self._get_im_pairs(im_pairs, save_paths)

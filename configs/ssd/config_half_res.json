@@ -23,5 +23,6 @@
 	"log_period": 100,
 	"val_period": 10,
 	"im_pairs_train": "",
-	"im_pairs_val": "/vol/biodata/data/learn2reg/2021/task03/pairs_val.csv"
+	"im_pairs_val": "/mnt/polyaxon/data1/learn2reg-2021/task3/pairs_val.csv",
+	"data_path": "/mnt/polyaxon/data1/learn2reg-2021/task3/neurite-oasis.v1.0/"
 }
