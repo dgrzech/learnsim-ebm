@@ -81,19 +81,19 @@ class Cubic_B_spline_FFD_3D(nn.Module):
     
     
 class SimilarityMetric(nn.Module):
-    def __init__(self, use_bias=True):
+    def __init__(self, enable_spectral_norm=True, use_bias=True):
         super(SimilarityMetric, self).__init__()
 
         self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
 
-        self.conv52 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
-        self.down5 = nn.Conv3d(32, 48, kernel_size=3, padding=1, stride=2, bias=use_bias)
-        self.conv61 = nn.Conv3d(48, 48, kernel_size=3, padding=1, bias=use_bias)
-
-    def enable_spectral_norm(self):
-        self.conv52 = spectral_norm(self.conv52)
-        self.down5 = spectral_norm(self.down5)
-        self.conv61 = spectral_norm(self.conv61)
+        if enable_spectral_norm:
+            self.conv52 = spectral_norm(nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias))
+            self.down5 = spectral_norm(nn.Conv3d(32, 48, kernel_size=3, padding=1, stride=2, bias=use_bias))
+            self.conv61 = spectral_norm(nn.Conv3d(48, 48, kernel_size=3, padding=1, bias=use_bias))
+        else:
+            self.conv52 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
+            self.down5 = nn.Conv3d(32, 48, kernel_size=3, padding=1, stride=2, bias=use_bias)
+            self.conv61 = nn.Conv3d(48, 48, kernel_size=3, padding=1, bias=use_bias)
 
     def forward(self, enc_output, reduction='mean'):
         y6 = self.activation_fn(self.conv52(enc_output[0]))
@@ -275,10 +275,10 @@ class Decoder(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, input_size, cps):
+    def __init__(self, input_size, cps, enable_spectral_norm=False):
         super(UNet, self).__init__()
 
-        encoder, decoder, sim = Encoder(), Decoder(input_size, cps), SimilarityMetric()
+        encoder, decoder, sim = Encoder(), Decoder(input_size, cps), SimilarityMetric(enable_spectral_norm=enable_spectral_norm)
         self.submodules = nn.ModuleDict({'enc': encoder, 'dec': decoder, 'sim': sim})
 
     def forward(self, x):

@@ -18,7 +18,7 @@ separator = '----------------------------------------'
 
 def write_hparams(writer, config):
     hparams = ['epochs_pretrain_model', 'loss_init', 'reg_weight', 'lr', 'tau',
-               'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'no_samples_SGLD_burn_in', 'dims', 'cps']
+               'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'dims', 'cps']
     hparam_dict = dict(zip(hparams, [config[hparam] for hparam in hparams]))
 
     for k, v in hparam_dict.items():
@@ -52,14 +52,19 @@ def set_up_model_and_preprocessing(args):
     if config['cps'] == "none":
         config['cps'] = None
 
-    model = UNet(config['dims'], config['cps']).to(DEVICE, non_blocking=True)
+    model = UNet(config['dims'], config['cps'], enable_spectral_norm=config['spectral_norm']).to(DEVICE, non_blocking=True)
     no_params_sim, no_params_enc, no_params_dec = model.no_params
     print(f'NO. PARAMETERS OF THE SIMILARITY METRIC: {no_params_sim}, ENCODER: {no_params_enc}, DECODER: {no_params_dec}')
 
     # optimisers
     optimizer_enc = torch.optim.Adam(list(model.submodules['enc'].parameters()), lr=config['lr'])
     optimizer_dec = torch.optim.Adam(list(model.submodules['dec'].parameters()), lr=config['lr'])
-    optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr'])
+    optimizer_sim_pretraining = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
+    optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
+
+    # lr schedulers
+    scheduler_sim_pretraining = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretraining, config['sim_step_size_pretraining'], config['sim_gamma_pretraining'])
+    scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretraining, config['sim_step_size'], config['sim_gamma'])
 
     # resuming training
     if args.resume is not None:
@@ -70,23 +75,30 @@ def set_up_model_and_preprocessing(args):
         model.load_state_dict(checkpoint['model'])
         optimizer_enc.load_state_dict(checkpoint['optimizer_enc'])
         optimizer_dec.load_state_dict(checkpoint['optimizer_dec'])
+        optimizer_sim_pretraining.load_state_dict(checkpoint['optimizer_sim_pretraining'])
         optimizer_sim.load_state_dict(checkpoint['optimizer_sim'])
+
+        scheduler_sim_pretraining.load_state_dict(checkpoint['scheduler_sim_pretraining'])
+        scheduler_sim.load_state_dict(checkpoint['scheduler_sim'])
 
     config_dict = {'config': config, 'loss_init': loss_init, 'model': model,
                    'optimizer_enc': optimizer_enc, 'optimizer_dec': optimizer_dec,
-                   'optimizer_sim': optimizer_sim}
+                   'optimizer_sim_pretraining': optimizer_sim_pretraining, 'optimizer_sim': optimizer_sim,
+                   'scheduler_sim_pretraining': scheduler_sim_pretraining, 'scheduler_sim': scheduler_sim}
     print(config_dict)
 
     return config_dict
 
 
-def save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim):
+def save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
+               scheduler_sim_pretraining, scheduler_sim):
     global GLOBAL_STEP
 
     path = os.path.join(args.model_dir, f'checkpoint_{epoch}.pt')
     state_dict = {'epoch': epoch, 'step': GLOBAL_STEP, 'model': model.state_dict(),
                   'optimizer_enc': optimizer_enc.state_dict(), 'optimizer_dec': optimizer_dec.state_dict(),
-                  'optimizer_sim': optimizer_sim.state_dict()}
+                  'optimizer_sim_pretraining': optimizer_sim_pretraining.state_dict(), 'optimizer_sim': optimizer_sim.state_dict(),
+                  'scheduler_sim_pretraining': scheduler_sim_pretraining.state_dict(), 'scheduler_sim': scheduler_sim.state_dict()}
 
     torch.save(state_dict, path)
 
@@ -94,50 +106,37 @@ def save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim):
 def generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer):
     global GLOBAL_STEP
 
-    no_samples_SGLD, no_samples_SGLD_burn_in = config['no_samples_SGLD'], config['no_samples_SGLD_burn_in']
+    no_samples_SGLD = config['no_samples_SGLD']
     
-    def init_optimizers_LD(config, sample_plus, sample_minus):
-        optimizer_LD_plus = torch.optim.SGD([sample_plus], lr=config['tau'])
-        optimizer_LD_minus = torch.optim.SGD([sample_minus], lr=config['tau'] * 0.01)
-
-        return optimizer_LD_plus, optimizer_LD_minus
+    def init_optimizers_LD(config, sample_minus):
+        optimizer_LD_minus = torch.optim.SGD([sample_minus], lr=config['tau'])
+        return optimizer_LD_minus
     
-    sample_plus, sample_minus = fixed['im'].detach().clone(), fixed['im'].detach().clone()
-    sample_plus.requires_grad_(True), sample_minus.requires_grad_(True)
-    optimizer_plus, optimizer_minus = init_optimizers_LD(config, sample_plus, sample_minus)
+    sample_minus = torch.clamp(torch.randn_like(fixed['im']), min=0.0, max=1.0)
+    sample_minus.requires_grad_(True)
 
-    mean_plus, mean_minus = torch.zeros_like(sample_plus), torch.zeros_like(sample_minus)
-    sigma_plus = sigma_minus = torch.ones_like(sample_plus)
-    tau = config['tau']
+    optimizer_minus = init_optimizers_LD(config, sample_minus)
+    sigma_minus, tau = torch.ones_like(sample_minus), config['tau']
 
-    for sample_no in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
-        if sample_no >= no_samples_SGLD_burn_in:
-            mean_plus += sample_plus.detach()
-            mean_minus += sample_minus.detach()
+    for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
+        sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
+        input_minus = torch.cat((moving_warped, sample_minus_noise), dim=1)
+        loss_minus = sim(enc(input_minus), reduction='sum')
+        loss_minus = loss_minus.sum()
 
-        sample_plus_noise, sample_minus_noise = SGLD.apply(sample_plus, sigma_plus, tau), SGLD.apply(sample_minus, sigma_minus, tau)
-        input_plus, input_minus = torch.cat((moving_warped, sample_plus_noise), dim=1), torch.cat((moving_warped, sample_minus_noise), dim=1)
-        loss_plus, loss_minus = sim(enc(input_plus), reduction='sum'), sim(enc(input_minus), reduction='sum')
-        loss_plus, loss_minus = loss_plus.sum(), -1.0 * loss_minus.sum()
-
-        optimizer_plus.zero_grad(set_to_none=True), optimizer_minus.zero_grad(set_to_none=True)
-        loss_plus.backward(), loss_minus.backward()
-        optimizer_plus.step(), optimizer_minus.step()
+        optimizer_minus.zero_grad(set_to_none=True)
+        loss_minus.backward()
+        optimizer_minus.step()
 
         with torch.no_grad():
-            writer.add_scalar('train/sample_plus_energy', loss_plus.item(), GLOBAL_STEP)
             writer.add_scalar('train/sample_minus_energy', loss_minus.item(), GLOBAL_STEP)
 
         GLOBAL_STEP += 1
 
-    mean_plus /= (no_samples_SGLD - no_samples_SGLD_burn_in)
-    mean_minus /= (no_samples_SGLD - no_samples_SGLD_burn_in)
-
     with torch.no_grad():
-        writer.add_images('train/mean_plus', mean_plus[:, :, mean_plus.size(2) // 2, ...], GLOBAL_STEP)
-        writer.add_images('train/mean_minus', mean_plus[:, :, mean_plus.size(2) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_minus', sample_minus_noise[:, :, sample_minus_noise.size(2) // 2, ...], GLOBAL_STEP)
 
-    return mean_plus.detach(), mean_minus.detach()
+    return torch.clamp(sample_minus_noise, min=0.0, max=1.0).detach()
 
 
 def train(args):
@@ -151,7 +150,8 @@ def train(args):
     sim = model.submodules['sim']
 
     optimizer_enc, optimizer_dec = config_dict['optimizer_enc'], config_dict['optimizer_dec']
-    optimizer_sim = config_dict['optimizer_sim']
+    optimizer_sim_pretraining, optimizer_sim = config_dict['optimizer_sim_pretraining'], config_dict['optimizer_sim']
+    scheduler_sim_pretraining, scheduler_sim = config_dict['scheduler_sim_pretraining'], config_dict['scheduler_sim']
 
     # create output directories
     timestamp = datetime.now().strftime(r'%m%d_%H%M%S')
@@ -206,6 +206,7 @@ def train(args):
                 fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
                 moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
+            # registration network
             enc.train()
             dec.train()
             sim.eval()
@@ -224,6 +225,7 @@ def train(args):
             optimizer_enc.step()
             optimizer_dec.step()
 
+            # similarity metric
             if not args.baseline:
                 enc.eval()
                 dec.eval()
@@ -235,6 +237,7 @@ def train(args):
                 cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
                 loss_similarity = 0.0
 
+                # actual input images
                 for el in cartesian_prod:
                     input = torch.cat((el[0], el[1]), dim=1)
                     data_term_sim_pred = sim(enc(input))
@@ -242,10 +245,20 @@ def train(args):
 
                     loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim)
 
-                loss_similarity /= len(cartesian_prod)
-                optimizer_sim.zero_grad(set_to_none=True)
+                # random images
+                for _ in range(config['no_samples_pretrain_sim']):
+                    im_fixed, im_moving = torch.randn_like(fixed['im']), torch.randn_like(moving['im'])
+                    input = torch.cat((im_fixed, im_moving), dim=1)
+                    data_term_sim_pred = sim(enc(input))
+                    data_term_sim = loss_init(input)
+
+                    loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim)
+
+                loss_similarity /= (len(cartesian_prod) + config['no_samples_pretrain_sim'])
+
+                optimizer_sim_pretraining.zero_grad(set_to_none=True)
                 loss_similarity.backward()
-                optimizer_sim.step()
+                optimizer_sim_pretraining.step()
 
             # tensorboard
             if GLOBAL_STEP % config['log_period'] == 0:
@@ -265,6 +278,8 @@ def train(args):
                     writer.add_images('pretrain_model/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
             GLOBAL_STEP += 1
+
+        scheduler_sim_pretraining.step()
 
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
@@ -293,7 +308,7 @@ def train(args):
                     loss_val_registration += data_term + reg_weight * reg_term
 
                     if not args.baseline:
-                        data_term_pred = sim(enc(input))
+                        data_term_pred = sim(enc(input_warped))
                         loss_val_similarity += F.l1_loss(data_term_pred, data_term)
 
                 # tensorboard
@@ -308,15 +323,14 @@ def train(args):
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'pretrain_model/val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
 
-        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim)
+        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
+                   scheduler_sim_pretraining, scheduler_sim)
 
     if args.baseline:
         return
 
-    sim.enable_spectral_norm()
-
     """
-    TRAIN THE MODEL
+    TRAIN THE REGISTRATION NETWORK AND THE SIMILARITY METRIC
     """
 
     alpha = config['alpha']  # L2 regularisation weight
@@ -330,29 +344,12 @@ def train(args):
                 fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
                 moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
-            enc.eval()
-            dec.eval()
+            # registration network
+            enc.train()
+            dec.train()
             sim.eval()
 
             input = torch.cat((moving['im'], fixed['im']), dim=1)
-
-            with torch.no_grad():
-                moving_warped = model(input)
-
-            mean_plus, mean_minus = generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer)
-
-            enc.train()
-            dec.train()
-            sim.train()
-
-            input_plus = torch.cat((moving_warped, mean_plus), dim=1)
-            loss_plus = sim(enc(input_plus))
-            input_minus = torch.cat((moving_warped, mean_minus), dim=1)
-            loss_minus = sim(enc(input_minus))
-
-            loss_similarity = loss_plus.mean() - loss_minus.mean() + alpha * (loss_plus.mean() ** 2 + loss_minus.mean() ** 2)
-
-            # decoder
             moving_warped = model(input)
             input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
 
@@ -360,15 +357,42 @@ def train(args):
             reg_term = model.regularizer()
             loss_registration = data_term + reg_weight * reg_term
 
-            # all together
-            loss = loss_registration + loss_similarity
-
             optimizer_enc.zero_grad(set_to_none=True)
             optimizer_dec.zero_grad(set_to_none=True)
-            optimizer_sim.zero_grad(set_to_none=True)
-            loss.backward()
+            loss_registration.backward()
             optimizer_enc.step()
             optimizer_dec.step()
+
+            # similarity metric
+            enc.eval()
+            dec.eval()
+            sim.train()
+
+            with torch.no_grad():
+                input = torch.cat((moving['im'], fixed['im']), dim=1)
+                moving_warped = model(input)
+
+            sample_minus = generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer)
+
+            input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
+            loss_plus = sim(enc(input_plus))
+            input_minus = torch.cat((moving_warped, sample_minus), dim=1)
+            loss_minus = sim(enc(input_minus))
+
+            loss_sim = loss_plus.mean() - loss_minus.mean()
+
+            if config['reg_energy_type'] == 'exp':
+                exponent = 1
+                reg_energy = torch.exp(-1.0 * (loss_minus.mean() - loss_plus.mean()) ** exponent)
+            elif config['reg_energy_type'] == 'tikhonov':
+                reg_energy = (loss_plus.mean() + loss_minus.mean()) ** 2
+            else:
+                raise NotImplementedError
+
+            loss_sim += alpha * reg_energy
+
+            optimizer_sim.zero_grad(set_to_none=True)
+            loss_sim.backward()
             optimizer_sim.step()
 
             # tensorboard
@@ -377,8 +401,7 @@ def train(args):
                     writer.add_scalar('train/loss_data', data_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_registration', loss_registration.item(), GLOBAL_STEP)
-                    writer.add_scalar('train/loss_similarity', loss_similarity.item(), GLOBAL_STEP)
-                    writer.add_scalar('train/loss', loss.item(), GLOBAL_STEP)
+                    writer.add_scalar('train/loss_similarity', loss_sim.item(), GLOBAL_STEP)
 
                     grid_warped = model.warp_image(grid)
 
@@ -388,6 +411,8 @@ def train(args):
                     writer.add_images('train/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
             GLOBAL_STEP += 1
+
+        scheduler_sim.step()
 
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
@@ -411,7 +436,8 @@ def train(args):
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
 
-        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim)
+        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
+                   scheduler_sim_pretraining, scheduler_sim)
 
 
 if __name__ == '__main__':
