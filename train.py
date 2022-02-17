@@ -178,6 +178,9 @@ def train(args):
 
     write_hparams(writer, config)
 
+    config_dict['args'] = vars(args)
+    wandb.init(project='learsim-ebm', config=config_dict, entity='ebm')
+
     # dataset
     dims = config['dims']
     batch_size, no_workers, no_samples_per_epoch = config['batch_size'], config['no_workers'], config['no_samples_per_epoch']
@@ -499,6 +502,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     wandb.login(key=args.wandb_key)
-    wandb.init(project='learsim-ebm', config=args, entity='mfazampour')
 
     train(args)
