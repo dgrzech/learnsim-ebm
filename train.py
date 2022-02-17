@@ -187,7 +187,7 @@ def train(args):
     dataloader_train = Learn2RegDataLoader(dataset_train, batch_size, no_workers, no_samples_per_epoch)
 
     dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
-    dataloader_val = Learn2RegDataLoader(dataset_val, batch_size, no_workers)
+    dataloader_val = Learn2RegDataLoader(dataset_val, 1, no_workers)
 
     structures_dict = dataset_train.structures_dict
 
@@ -223,7 +223,7 @@ def train(args):
 
             optimizer_enc.zero_grad(set_to_none=True)
             optimizer_dec.zero_grad(set_to_none=True)
-            loss_registration.backward()
+            loss_registration.mean().backward()
             optimizer_enc.step()
             optimizer_dec.step()
 
@@ -265,11 +265,13 @@ def train(args):
             # tensorboard
             if GLOBAL_STEP % config['log_period'] == 0:
                 with torch.no_grad():
+                    data_term, reg_term, loss_registration = data_term.mean(), reg_term.mean(), loss_registration.mean()
                     writer.add_scalar('pretrain_model/train/loss_data', data_term.item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain_model/train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain_model/train/loss_registration', loss_registration.item(), GLOBAL_STEP)
 
                     if not args.baseline:
+                        loss_similarity = loss_similarity.mean()
                         writer.add_scalar('pretrain_model/train/loss_similarity', loss_similarity.item(), GLOBAL_STEP)
 
                     grid_warped = model.warp_image(grid)
@@ -382,7 +384,7 @@ def train(args):
 
             optimizer_enc.zero_grad(set_to_none=True)
             optimizer_dec.zero_grad(set_to_none=True)
-            loss_registration.backward()
+            loss_registration.mean().backward()
             optimizer_enc.step()
             optimizer_dec.step()
 
@@ -421,6 +423,7 @@ def train(args):
             # tensorboard
             if GLOBAL_STEP % config['log_period'] == 0:
                 with torch.no_grad():
+                    data_term, reg_term, loss_registration, loss_sim = data_term.mean(), reg_term.mean(), loss_registration.mean(), loss_sim.mean()
                     writer.add_scalar('train/loss_data', data_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_registration', loss_registration.item(), GLOBAL_STEP)
