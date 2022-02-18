@@ -179,7 +179,7 @@ def train(args):
     write_hparams(writer, config)
 
     config_dict['args'] = vars(args)
-    wandb.init(project='learsim-ebm', config=config_dict, entity='ebm')
+    wandb.init(project='learsim-ebm', config=config_dict, entity=args.wandb_entity)
 
     # dataset
     dims = config['dims']
@@ -495,6 +495,8 @@ if __name__ == '__main__':
     parser.add_argument('--exp-name', default=None, help='experiment name')
     parser.add_argument('--resume', default=None, help='path to a model checkpoint')
     parser.add_argument('--wandb-key', type=str, required=True, help='key to login to your wandb account')
+    parser.add_argument('--wandb-entity', type=str, default='ebm', choices=['ebm', 'mfazampour', 'dgrzech'],
+                        help='wandb entity, the team one or personal one')
 
     # logging args
     parser.add_argument('--out', default='saved', help='output root directory')
