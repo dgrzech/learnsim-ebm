@@ -120,6 +120,7 @@ def generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer):
     optimizer_minus = init_optimizers_LD(config, sample_minus)
     sigma_minus, tau = torch.ones_like(sample_minus), config['tau']
 
+    sample_minus_energy = []
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
         input_minus = torch.cat((moving_warped, sample_minus_noise), dim=1)
@@ -133,10 +134,19 @@ def generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer):
         with torch.no_grad():
             writer.add_scalar('train/sample_minus_energy', loss_minus.item(), GLOBAL_STEP)
 
+        sample_minus_energy.append(loss_minus.item())
+
         GLOBAL_STEP += 1
 
     with torch.no_grad():
         writer.add_images('train/sample_minus', sample_minus_noise[:, :, sample_minus_noise.size(2) // 2, ...], GLOBAL_STEP)
+
+    fig = plt.figure()
+    fig.add_subplot()
+    fig.axes[0].plot(sample_minus_energy)
+    wandb_data = {'EBM_sample': {'energy': fig,
+                                 'image': utils.plot_tensor(sample_minus_noise)}}
+    wandb.log(wandb_data)
 
     return torch.clamp(sample_minus_noise, min=0.0, max=1.0).detach()
 
