@@ -108,7 +108,7 @@ def save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_p
     torch.save(state_dict, path)
 
 
-def generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer):
+def generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer):
     global GLOBAL_STEP
 
     no_samples_SGLD = config['no_samples_SGLD']
@@ -117,16 +117,16 @@ def generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer):
         optimizer_LD_minus = torch.optim.SGD([sample_minus], lr=config['tau'])
         return optimizer_LD_minus
     
-    sample_minus = torch.clamp(torch.randn_like(fixed['im']), min=0.0, max=1.0)
+    sample_minus = fixed['im'].clone().detach()
     sample_minus.requires_grad_(True)
 
     optimizer_minus = init_optimizers_LD(config, sample_minus)
     sigma_minus, tau = torch.ones_like(sample_minus), config['tau']
 
-    sample_minus_energy = []
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
         input_minus = torch.cat((moving_warped, sample_minus_noise), dim=1)
+
         loss_minus = sim(enc(input_minus), reduction='sum')
         loss_minus = loss_minus.sum()
 
@@ -135,23 +135,17 @@ def generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer):
         optimizer_minus.step()
 
         with torch.no_grad():
-            writer.add_scalar('train/sample_minus_energy', loss_minus.item(), GLOBAL_STEP)
-
-        sample_minus_energy.append(loss_minus.item())
+            writer.add_scalar(f'train/epoch_{epoch}/sample_minus_energy', loss_minus.item(), GLOBAL_STEP)
 
         GLOBAL_STEP += 1
 
     with torch.no_grad():
         writer.add_images('train/sample_minus', sample_minus_noise[:, :, sample_minus_noise.size(2) // 2, ...], GLOBAL_STEP)
 
-    fig = plt.figure()
-    fig.add_subplot()
-    fig.axes[0].plot(sample_minus_energy)
-    wandb_data = {'EBM_sample': {'energy': fig,
-                                 'image': utils.plot_tensor(sample_minus_noise)}}
+    wandb_data = {'sample_minus': utils.plot_tensor(sample_minus)}
     wandb.log(wandb_data)
 
-    return torch.clamp(sample_minus_noise, min=0.0, max=1.0).detach()
+    return torch.clamp(sample_minus, min=0.0, max=1.0).detach()
 
 
 def train(args):
@@ -292,11 +286,6 @@ def train(args):
 
                     grid_warped = model.warp_image(grid)
 
-                    writer.add_images('pretrain_model/fixed', fixed['im'][:, :, fixed['im'].size(2) // 2, ...], GLOBAL_STEP)
-                    writer.add_images('pretrain_model/moving', moving['im'][:, :, moving['im'].size(2) // 2, ...], GLOBAL_STEP)
-                    writer.add_images('pretrain_model/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
-                    writer.add_images('pretrain_model/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
-
                     wandb_data = {'pretrain_model': {'loss_data': data_term.item(),
                                                      'loss_regularisation': reg_weight * reg_term.item(),
                                                      'loss_registration': loss_registration.item(),
@@ -304,6 +293,11 @@ def train(args):
                                                      'moving': utils.plot_tensor(moving['im']),
                                                      'moving_warped': utils.plot_tensor(moving_warped),
                                                      'transformation': utils.plot_tensor(grid_warped)}}
+
+                    writer.add_images('pretrain_model/fixed', fixed['im'][:, :, fixed['im'].size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('pretrain_model/moving', moving['im'][:, :, moving['im'].size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('pretrain_model/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('pretrain_model/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
                     if not args.baseline:
                         wandb_data['pretrain_model']['loss_similarity'] = loss_similarity.item()
@@ -344,17 +338,14 @@ def train(args):
                         data_term_pred = sim(enc(input_warped))
                         loss_val_similarity += F.l1_loss(data_term_pred, data_term)
 
-
                 # tensorboard
                 writer.add_scalar('pretrain_model/val/loss_registration', loss_val_registration.item() / len(dataloader_val), GLOBAL_STEP)
 
                 dsc_mean = torch.mean(dsc, dim=0)
                 writer.add_scalar('pretrain_model/val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
 
-                wandb_data = {'pretrain_val': {
-                    'loss_registration': loss_val_registration.item(),
-                    'metric_dsc_avg': torch.mean(dsc_mean).item()
-                }}
+                wandb_data = {'pretrain_val': {'loss_registration': loss_val_registration.item(),
+                                               'metric_dsc_avg': torch.mean(dsc_mean).item()}}
 
                 if not args.baseline:
                     writer.add_scalar('pretrain_model/val/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
@@ -363,6 +354,8 @@ def train(args):
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'pretrain_model/val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
                     wandb_data['pretrain_val'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
+
+                wandb.log(wandb_data)
 
         save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
                    scheduler_sim_pretraining, scheduler_sim)
@@ -404,37 +397,39 @@ def train(args):
             optimizer_enc.step()
             optimizer_dec.step()
 
-            # similarity metric
-            enc.eval()
-            dec.eval()
-            sim.train()
+            if epoch % config['sim_update_period'] == 0:  # similarity metric
+                enc.eval()
+                dec.eval()
+                sim.train()
 
-            with torch.no_grad():
-                input = torch.cat((moving['im'], fixed['im']), dim=1)
-                moving_warped = model(input)
+                with torch.no_grad():
+                    input = torch.cat((moving['im'], fixed['im']), dim=1)
+                    moving_warped = model(input)
 
-            sample_minus = generate_samples_from_EBM(config, enc, sim, fixed, moving_warped, writer)
+                sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
 
-            input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
-            loss_plus = sim(enc(input_plus))
-            input_minus = torch.cat((moving_warped, sample_minus), dim=1)
-            loss_minus = sim(enc(input_minus))
+                input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
+                loss_plus = sim(enc(input_plus))
+                input_minus = torch.cat((moving_warped, sample_minus), dim=1)
+                loss_minus = sim(enc(input_minus))
 
-            loss_sim = loss_plus.mean() - loss_minus.mean()
+                loss_sim = loss_plus.mean() - loss_minus.mean()
 
-            if config['reg_energy_type'] == 'exp':
-                exponent = 1
-                reg_energy = torch.exp(-1.0 * (loss_minus.mean() - loss_plus.mean()) ** exponent)
-            elif config['reg_energy_type'] == 'tikhonov':
-                reg_energy = (loss_plus.mean() + loss_minus.mean()) ** 2
-            else:
-                raise NotImplementedError
+                if config['reg_energy_type'] == 'exp':
+                    exponent = 1
+                    reg_energy = torch.exp(-1.0 * (loss_minus.mean() - loss_plus.mean()) ** exponent)
+                elif config['reg_energy_type'] == 'tikhonov':
+                    reg_energy = (loss_plus.mean() + loss_minus.mean()) ** 2
+                else:
+                    raise NotImplementedError
 
-            loss_sim += alpha * reg_energy
+                loss_sim += alpha * reg_energy
 
-            optimizer_sim.zero_grad(set_to_none=True)
-            loss_sim.backward()
-            optimizer_sim.step()
+                optimizer_sim.zero_grad(set_to_none=True)
+                loss_sim.backward()
+                optimizer_sim.step()
+
+                scheduler_sim.step()
 
             # tensorboard
             if GLOBAL_STEP % config['log_period'] == 0:
@@ -453,20 +448,17 @@ def train(args):
                     writer.add_images('train/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
                     wandb_data = {'train': {'loss_data': data_term.item(),
-                                              'loss_regularisation': reg_weight * reg_term.item(),
-                                              'loss_registration': loss_registration.item(),
-                                              'loss_similarity': loss_sim.item(),
-                                              'fixed': utils.plot_tensor(fixed['im']),
-                                              'moving': utils.plot_tensor(moving['im']),
-                                              'moving_warped': utils.plot_tensor(moving_warped),
-                                              'transformation': utils.plot_tensor(grid_warped)
-                                            }
-                                  }
+                                            'loss_regularisation': reg_weight * reg_term.item(),
+                                            'loss_registration': loss_registration.item(),
+                                            'loss_similarity': loss_sim.item(),
+                                            'fixed': utils.plot_tensor(fixed['im']),
+                                            'moving': utils.plot_tensor(moving['im']),
+                                            'moving_warped': utils.plot_tensor(moving_warped),
+                                            'transformation': utils.plot_tensor(grid_warped)}}
+
                     wandb.log(wandb_data)
 
             GLOBAL_STEP += 1
-
-        scheduler_sim.step()
 
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
@@ -487,14 +479,13 @@ def train(args):
                 dsc_mean = torch.mean(dsc, dim=0)
                 writer.add_scalar('val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
 
-                wandb_data = {'validation': {
-                    'metric_dsc_avg': torch.mean(dsc_mean).item()
-                }}
+                wandb_data = {'validation': {'metric_dsc_avg': torch.mean(dsc_mean).item()}}
 
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
                     wandb_data['validation'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
 
+                wandb.log(wandb_data)
 
         save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
                    scheduler_sim_pretraining, scheduler_sim)

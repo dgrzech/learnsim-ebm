@@ -169,6 +169,7 @@ class OasisDataset(BaseImageRegistrationDataset):
     def __init__(self, save_paths, im_pairs, dims, data_path=''):
         if data_path == '':
             data_path = '/vol/biodata/data/learn2reg/2021/task03'
+
         im_filename, seg_filename, mask_filename = 'aligned_norm.nii.gz', 'aligned_seg35.nii.gz', ''
         structures_dict = structures_dict_35  # segmentation IDs
         im_pairs = self._get_im_pairs(im_pairs, save_paths)
