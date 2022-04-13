@@ -114,10 +114,10 @@ def generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, wri
     no_samples_SGLD = config['no_samples_SGLD']
     
     def init_optimizers_LD(config, sample_minus):
-        optimizer_LD_minus = torch.optim.SGD([sample_minus], lr=config['tau'])
+        optimizer_LD_minus = torch.optim.Adam([sample_minus], lr=config['tau'])
         return optimizer_LD_minus
-    
-    sample_minus = fixed['im'].clone().detach()
+
+    sample_minus = torch.rand_like(fixed['im']).detach()
     sample_minus.requires_grad_(True)
 
     optimizer_minus = init_optimizers_LD(config, sample_minus)
@@ -127,7 +127,7 @@ def generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, wri
         sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
         input_minus = torch.cat((moving_warped, sample_minus_noise), dim=1)
 
-        loss_minus = sim(enc(input_minus), reduction='sum')
+        loss_minus = sim(enc(input_minus * fixed['mask']), reduction='sum')
         loss_minus = loss_minus.sum()
 
         optimizer_minus.zero_grad(set_to_none=True)
