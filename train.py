@@ -23,7 +23,7 @@ separator = '----------------------------------------'
 
 def write_hparams(writer, config):
     hparams = ['epochs_pretrain_model', 'loss_init', 'reg_weight', 'lr', 'tau',
-               'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'dims', 'cps']
+               'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'dims']
     hparam_dict = dict(zip(hparams, [config[hparam] for hparam in hparams]))
 
     for k, v in hparam_dict.items():
@@ -54,10 +54,7 @@ def set_up_model_and_preprocessing(args):
         raise NotImplementedError(f'Loss {args.loss} not supported')
 
     # model
-    if config['cps'] == "none":
-        config['cps'] = None
-
-    model = UNet(config['dims'], config['cps'], enable_spectral_norm=config['spectral_norm']).to(DEVICE, non_blocking=True)
+    model = UNet(config['dims'], activation_fn_sim=config['activation_fn_sim'], enable_spectral_norm=config['spectral_norm']).to(DEVICE, non_blocking=True)
     no_params_sim, no_params_enc, no_params_dec = model.no_params
     print(f'NO. PARAMETERS OF THE SIMILARITY METRIC: {no_params_sim}, ENCODER: {no_params_enc}, DECODER: {no_params_dec}')
 
@@ -127,7 +124,7 @@ def generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, wri
         sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
         input_minus = torch.cat((moving_warped, sample_minus_noise), dim=1)
 
-        loss_minus = sim(enc(input_minus * fixed['mask']), reduction='sum')
+        loss_minus = sim(enc(input_minus), reduction='sum')
         loss_minus = loss_minus.sum()
 
         optimizer_minus.zero_grad(set_to_none=True)
@@ -218,7 +215,7 @@ def train(args):
                 fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
                 moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
-            # registration network
+            # REGISTRATION NETWORK
             enc.train()
             dec.train()
             sim.eval()
@@ -237,86 +234,80 @@ def train(args):
             optimizer_enc.step()
             optimizer_dec.step()
 
-            # similarity metric
-            if not args.baseline:
-                enc.eval()
-                dec.eval()
-                sim.train()
-
-                with torch.no_grad():
-                    moving_warped = model(input)
-
-                cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
-                loss_similarity = 0.0
-
-                # actual input images
-                for el in cartesian_prod:
-                    input = torch.cat((el[0], el[1]), dim=1)
-                    data_term_sim_pred = sim(enc(input))
-                    data_term_sim = loss_init(input)
-
-                    loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim)
-
-                # random images
-                for _ in range(config['no_samples_pretrain_sim']):
-                    im_fixed, im_moving = torch.randn_like(fixed['im']), torch.randn_like(moving['im'])
-                    input = torch.cat((im_fixed, im_moving), dim=1)
-                    data_term_sim_pred = sim(enc(input))
-                    data_term_sim = loss_init(input)
-
-                    loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim)
-
-                loss_similarity /= (len(cartesian_prod) + config['no_samples_pretrain_sim'])
-
-                optimizer_sim_pretraining.zero_grad(set_to_none=True)
-                loss_similarity.backward()
-                optimizer_sim_pretraining.step()
-
             # tensorboard
             if GLOBAL_STEP % config['log_period'] == 0:
                 with torch.no_grad():
                     data_term, reg_term, loss_registration = data_term.mean(), reg_term.mean(), loss_registration.mean()
+                    grid_warped = model.warp_image(grid)
+
                     writer.add_scalar('pretrain_model/train/loss_data', data_term.item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain_model/train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain_model/train/loss_registration', loss_registration.item(), GLOBAL_STEP)
-
-                    if not args.baseline:
-                        loss_similarity = loss_similarity.mean()
-                        writer.add_scalar('pretrain_model/train/loss_similarity', loss_similarity.item(), GLOBAL_STEP)
-
-                    grid_warped = model.warp_image(grid)
-
-                    wandb_data = {'pretrain_model': {'loss_data': data_term.item(),
-                                                     'loss_regularisation': reg_weight * reg_term.item(),
-                                                     'loss_registration': loss_registration.item(),
-                                                     'fixed': utils.plot_tensor(fixed['im']),
-                                                     'moving': utils.plot_tensor(moving['im']),
-                                                     'moving_warped': utils.plot_tensor(moving_warped),
-                                                     'transformation': utils.plot_tensor(grid_warped)}}
 
                     writer.add_images('pretrain_model/fixed', fixed['im'][:, :, fixed['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/moving', moving['im'][:, :, moving['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
-                    if not args.baseline:
+                    wandb_data = {'pretrain_model': {'loss_data': data_term.item(),
+                                                     'loss_regularisation': reg_weight * reg_term.item(),
+                                                     'loss_registration': loss_registration.item(),
+
+                                                     'fixed': utils.plot_tensor(fixed['im']),
+                                                     'moving': utils.plot_tensor(moving['im']),
+                                                     'moving_warped': utils.plot_tensor(moving_warped),
+                                                     'transformation': utils.plot_tensor(grid_warped)}}
+
+            # SIMILARITY METRIC
+            if not args.baseline:
+                enc.eval()
+                dec.eval()
+                sim.train()
+
+                with torch.no_grad():
+                    rand1, rand2 = torch.rand_like(fixed['im']), torch.rand_like(moving['im'])
+                    cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped])) + list(itertools.product([rand1, rand2], [rand1, rand2]))
+
+                loss_similarity = 0.0
+
+                for el in cartesian_prod:
+                    with torch.no_grad():
+                        input = torch.cat((el[0], el[1]), dim=1)
+
+                    data_term_sim = loss_init(input)
+                    data_term_sim_pred = sim(enc(input))
+
+                    loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / len(cartesian_prod)
+
+                optimizer_sim_pretraining.zero_grad(set_to_none=True)
+                loss_similarity.backward()
+                optimizer_sim_pretraining.step()
+
+                # tensorboard
+                if GLOBAL_STEP % config['log_period'] == 0:
+                    with torch.no_grad():
+                        loss_similarity = loss_similarity.mean()
+
+                        writer.add_scalar('pretrain_model/train/loss_similarity', loss_similarity.item(), GLOBAL_STEP)
                         wandb_data['pretrain_model']['loss_similarity'] = loss_similarity.item()
 
-                    wandb.log(wandb_data)
+            if GLOBAL_STEP % config['log_period'] == 0:
+                wandb.log(wandb_data)
 
             GLOBAL_STEP += 1
 
-        scheduler_sim_pretraining.step()
+        if not args.baseline:
+            scheduler_sim_pretraining.step()
 
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
+            enc.eval()
+            dec.eval()
+            sim.eval()
+
             with torch.no_grad():
                 dsc = torch.zeros(len(dataloader_val), len(structures_dict))
                 loss_val_registration, loss_val_similarity = 0.0, 0.0
-
-                enc.eval()
-                dec.eval()
-                sim.eval()
 
                 for idx, (fixed, moving) in enumerate(dataloader_val):
                     for key in fixed:
@@ -327,16 +318,25 @@ def train(args):
                     moving_warped = model(input)
                     seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
 
-                    dsc[idx, :] = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)
-
                     input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
+
                     data_term = loss_init(input_warped)
                     reg_term = model.regularizer()
                     loss_val_registration += data_term + reg_weight * reg_term
 
+                    dsc[idx, :] = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)
+
                     if not args.baseline:
-                        data_term_pred = sim(enc(input_warped))
-                        loss_val_similarity += F.l1_loss(data_term_pred, data_term)
+                        rand1, rand2 = torch.rand_like(fixed['im']), torch.rand_like(moving['im'])
+                        cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped])) + list(itertools.product([rand1, rand2], [rand1, rand2]))
+
+                        for el in cartesian_prod:
+                            input = torch.cat((el[0], el[1]), dim=1)
+
+                            data_term = loss_init(input)
+                            data_term_pred = sim(enc(input))
+
+                            loss_val_similarity += F.l1_loss(data_term_pred, data_term) / len(cartesian_prod)
 
                 # tensorboard
                 writer.add_scalar('pretrain_model/val/loss_registration', loss_val_registration.item() / len(dataloader_val), GLOBAL_STEP)
@@ -347,13 +347,13 @@ def train(args):
                 wandb_data = {'pretrain_val': {'loss_registration': loss_val_registration.item(),
                                                'metric_dsc_avg': torch.mean(dsc_mean).item()}}
 
-                if not args.baseline:
-                    writer.add_scalar('pretrain_model/val/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
-                    wandb_data['pretrain_val']['loss_similarity'] = loss_val_similarity.item()
-
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'pretrain_model/val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
                     wandb_data['pretrain_val'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
+
+                if not args.baseline:
+                    writer.add_scalar('pretrain_model/val/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
+                    wandb_data['pretrain_val']['loss_similarity'] = loss_val_similarity.item()
 
                 wandb.log(wandb_data)
 
@@ -364,10 +364,11 @@ def train(args):
         return
 
     """
-    TRAIN THE REGISTRATION NETWORK AND THE SIMILARITY METRIC
+    TRAIN THE NEURAL NETWORK
     """
 
     alpha = config['alpha']  # L2 regularisation weight
+    omega = config['omega']
 
     start_epoch = end_epoch
     end_epoch = start_epoch + config['epochs'] - 1
@@ -378,10 +379,9 @@ def train(args):
                 fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
                 moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
-            # registration network
             enc.train()
             dec.train()
-            sim.eval()
+            sim.train()
 
             input = torch.cat((moving['im'], fixed['im']), dim=1)
             moving_warped = model(input)
@@ -389,52 +389,42 @@ def train(args):
 
             data_term = sim(enc(input_warped))
             reg_term = model.regularizer()
+
+            sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
+
+            input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
+            loss_plus = sim(enc(input_plus))
+            input_minus = torch.cat((moving_warped, sample_minus), dim=1)
+            loss_minus = sim(enc(input_minus))
+
+            loss_sim = loss_plus.mean() - loss_minus.mean()
+
+            if config['reg_energy_type'] == 'exp':
+                exponent = 1
+                reg_energy = torch.exp(-1.0 * (loss_minus.mean() - loss_plus.mean()) ** exponent)
+            elif config['reg_energy_type'] == 'tikhonov':
+                reg_energy = (loss_plus.mean() + loss_minus.mean()) ** 2
+            else:
+                raise NotImplementedError
+
             loss_registration = data_term + reg_weight * reg_term
+            loss_sim += alpha * reg_energy
+
+            loss = loss_registration + omega * loss_sim
 
             optimizer_enc.zero_grad(set_to_none=True)
             optimizer_dec.zero_grad(set_to_none=True)
-            loss_registration.mean().backward()
+            optimizer_sim.zero_grad(set_to_none=True)
+            loss.backward()
             optimizer_enc.step()
             optimizer_dec.step()
-
-            if epoch % config['sim_update_period'] == 0:  # similarity metric
-                enc.eval()
-                dec.eval()
-                sim.train()
-
-                with torch.no_grad():
-                    input = torch.cat((moving['im'], fixed['im']), dim=1)
-                    moving_warped = model(input)
-
-                sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
-
-                input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
-                loss_plus = sim(enc(input_plus))
-                input_minus = torch.cat((moving_warped, sample_minus), dim=1)
-                loss_minus = sim(enc(input_minus))
-
-                loss_sim = loss_plus.mean() - loss_minus.mean()
-
-                if config['reg_energy_type'] == 'exp':
-                    exponent = 1
-                    reg_energy = torch.exp(-1.0 * (loss_minus.mean() - loss_plus.mean()) ** exponent)
-                elif config['reg_energy_type'] == 'tikhonov':
-                    reg_energy = (loss_plus.mean() + loss_minus.mean()) ** 2
-                else:
-                    raise NotImplementedError
-
-                loss_sim += alpha * reg_energy
-
-                optimizer_sim.zero_grad(set_to_none=True)
-                loss_sim.backward()
-                optimizer_sim.step()
-
-                scheduler_sim.step()
+            optimizer_sim.step()
 
             # tensorboard
             if GLOBAL_STEP % config['log_period'] == 0:
                 with torch.no_grad():
                     data_term, reg_term, loss_registration, loss_sim = data_term.mean(), reg_term.mean(), loss_registration.mean(), loss_sim.mean()
+
                     writer.add_scalar('train/loss_data', data_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_registration', loss_registration.item(), GLOBAL_STEP)
@@ -460,6 +450,8 @@ def train(args):
 
             GLOBAL_STEP += 1
 
+        scheduler_sim.step()
+
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
             with torch.no_grad():
@@ -471,8 +463,9 @@ def train(args):
                         moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
                     input = torch.cat((moving['im'], fixed['im']), dim=1)
-                    model(input)
+                    _ = model(input)
                     seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
+
                     dsc[idx, :] = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)
 
                 # tensorboard
@@ -508,5 +501,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     wandb.login(key=args.wandb_key)
-
     train(args)
