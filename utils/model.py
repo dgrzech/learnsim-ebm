@@ -78,13 +78,22 @@ class Cubic_B_spline_FFD_3D(nn.Module):
         #  crop the output to image size
         slicer = (slice(0, v.shape[0]), slice(0, v.shape[1])) + tuple(slice(s, s + self.dims[i]) for i, s in enumerate(self.stride))
         return v[slicer]
-    
+
+
+def transform(src, grid, interpolation='bilinear', padding='border'):
+    return F.grid_sample(src, grid, mode=interpolation, align_corners=True, padding_mode=padding)
+
     
 class SimilarityMetric(nn.Module):
-    def __init__(self, enable_spectral_norm=True, use_bias=True):
+    def __init__(self, activation_fn="tanh", enable_spectral_norm=True, use_bias=True):
         super(SimilarityMetric, self).__init__()
 
-        self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        if activation_fn == 'tanh':
+            self.activation_fn = lambda x: torch.tanh(x)
+        elif activation_fn == 'leaky_relu':
+            self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        elif activation_fn == 'none':
+            self.activation_fn = lambda x: x
 
         if enable_spectral_norm:
             self.conv52 = spectral_norm(nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias))
@@ -94,6 +103,11 @@ class SimilarityMetric(nn.Module):
             self.conv52 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
             self.down5 = nn.Conv3d(32, 48, kernel_size=3, padding=1, stride=2, bias=use_bias)
             self.conv61 = nn.Conv3d(48, 48, kernel_size=3, padding=1, bias=use_bias)
+
+        with torch.no_grad():
+            torch.nn.init.normal_(self.conv52.weight)
+            torch.nn.init.normal_(self.down5.weight)
+            torch.nn.init.normal_(self.conv61.weight)
 
     def forward(self, enc_output, reduction='mean'):
         y6 = self.activation_fn(self.conv52(enc_output[0]))
@@ -135,15 +149,11 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, input_size, cps):
+    def __init__(self, input_size, cps=None):
         super(Decoder, self).__init__()
 
-        self.cps = cps
-
-        if cps is not None:
-            self.evaluate_cubic_bspline_ffd = Cubic_B_spline_FFD_3D(dims=input_size, cps=cps)
-
         self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        self.cps = cps
         self.register_buffer('grid', self.get_normalized_grid(input_size))
 
         input_channels, no_dims = 2, 3
@@ -156,7 +166,8 @@ class Decoder(nn.Module):
         self.up3 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
         self.conv3 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=use_bias)
 
-        if cps is not None:
+        if self.cps is not None:
+            self.evaluate_cubic_bspline_ffd = Cubic_B_spline_FFD_3D(dims=input_size, cps=cps)
             self.conv4 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
         else:
             self.up4 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
@@ -193,7 +204,7 @@ class Decoder(nn.Module):
         disp = vel / (2 ** nb_steps)
 
         for _ in range(nb_steps):
-            warped_disp = self.transform(disp, self.move_grid_dims(self.grid + disp), padding='border')
+            warped_disp = transform(disp, self.move_grid_dims(self.grid + disp), padding='border')
             disp = disp + warped_disp
 
         return disp
@@ -202,6 +213,7 @@ class Decoder(nn.Module):
         ndims = x.dim()
         dims = list(range(ndims))
         dims.pop(src)
+
         if dst < 0:
             dst = ndims + dst
         dims.insert(dst, src)
@@ -223,7 +235,7 @@ class Decoder(nn.Module):
         dx = torch.abs(self.disp[:, :, :, 1:, :] - self.disp[:, :, :, :-1, :])
         dz = torch.abs(self.disp[:, :, :, :, 1:] - self.disp[:, :, :, :, :-1])
 
-        if (penalty == 'l2'):
+        if penalty == 'l2':
             dy = dy * dy
             dx = dx * dx
             dz = dz * dz
@@ -231,15 +243,12 @@ class Decoder(nn.Module):
         d = torch.mean(dx) + torch.mean(dy) + torch.mean(dz)
         return d / 3.0
 
-    def transform(self, src, grid, interpolation='bilinear', padding='border'):
-        return F.grid_sample(src, grid, mode=interpolation, align_corners=True, padding_mode=padding)
-
     def warp_image(self, img, interpolation='bilinear', padding='border'):
-        wrp = self.transform(img, self.T, interpolation=interpolation, padding=padding)
+        wrp = transform(img, self.T, interpolation=interpolation, padding=padding)
         return wrp
 
     def warp_inv_image(self, img, interpolation='bilinear', padding='border'):
-        wrp = self.transform(img, self.T_inv, interpolation=interpolation, padding=padding)
+        wrp = transform(img, self.T_inv, interpolation=interpolation, padding=padding)
         return wrp
 
     def forward(self, x, x6, x5, x4, x3, x2):
@@ -249,12 +258,7 @@ class Decoder(nn.Module):
         x4 = self.activation_fn(self.conv2(x4))
         x3 = torch.cat([self.up3(x4), x3], dim=1)
         x3 = self.activation_fn(self.conv3(x3))
-
-        if self.cps is not None:
-            x2 = x3
-        else:
-            x2 = torch.cat([self.up4(x3), x2], dim=1)
-
+        x2 = x3 if self.cps is not None else torch.cat([self.up4(x3), x2], dim=1)
         x2 = self.activation_fn(self.conv4(x2))
         x1 = self.activation_fn(self.conv5(x2))
         x1 = self.activation_fn(self.conv6(x1))
@@ -275,10 +279,12 @@ class Decoder(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, input_size, cps, enable_spectral_norm=False):
+    def __init__(self, input_size, activation_fn_sim='tanh', cps=None, enable_spectral_norm=False):
         super(UNet, self).__init__()
 
-        encoder, decoder, sim = Encoder(), Decoder(input_size, cps), SimilarityMetric(enable_spectral_norm=enable_spectral_norm)
+        encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
+        sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm)
+
         self.submodules = nn.ModuleDict({'enc': encoder, 'dec': decoder, 'sim': sim})
 
     def forward(self, x):
