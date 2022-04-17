@@ -96,21 +96,21 @@ class SimilarityMetric(nn.Module):
             self.activation_fn = lambda x: x
 
         if enable_spectral_norm:
-            self.conv52 = spectral_norm(nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias))
-            self.down5 = spectral_norm(nn.Conv3d(32, 48, kernel_size=3, padding=1, stride=2, bias=use_bias))
-            self.conv61 = spectral_norm(nn.Conv3d(48, 48, kernel_size=3, padding=1, bias=use_bias))
+            self.conv52 = spectral_norm(nn.Conv3d(2, 16, kernel_size=3, padding=1, bias=use_bias))
+            self.down5 = spectral_norm(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=2, bias=use_bias))
+            self.conv61 = spectral_norm(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
         else:
-            self.conv52 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
-            self.down5 = nn.Conv3d(32, 48, kernel_size=3, padding=1, stride=2, bias=use_bias)
-            self.conv61 = nn.Conv3d(48, 48, kernel_size=3, padding=1, bias=use_bias)
+            self.conv52 = nn.Conv3d(2, 16, kernel_size=3, padding=1, bias=use_bias)
+            self.down5 = nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=2, bias=use_bias)
+            self.conv61 = nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias)
 
         with torch.no_grad():
             torch.nn.init.normal_(self.conv52.weight)
             torch.nn.init.normal_(self.down5.weight)
             torch.nn.init.normal_(self.conv61.weight)
 
-    def forward(self, enc_output, reduction='mean'):
-        y6 = self.activation_fn(self.conv52(enc_output[0]))
+    def forward(self, input, reduction='mean'):
+        y6 = self.activation_fn(self.conv52(input))
         y7 = self.down5(y6)
         y7 = self.activation_fn(self.conv61(y7))
         y7 = y6.reshape(y7.size(0), -1) ** 2
