@@ -204,7 +204,7 @@ def train(args):
     reg_weight = config['reg_weight']
 
     """
-    TRAIN THE REGISTRATION NETWORK AND PRE-TRAIN THE SIMILARITY METRIC
+    PRE-TRAINING
     """
 
     start_epoch, end_epoch = config['start_epoch'], config['epochs_pretrain_model']
