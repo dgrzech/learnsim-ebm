@@ -22,7 +22,8 @@ separator = '----------------------------------------'
 
 
 def write_hparams(writer, config):
-    hparams = ['epochs_pretrain_model', 'loss_init', 'reg_weight', 'lr', 'tau',
+    hparams = ['epochs_pretrain_model', 'loss_init', 'alpha', 'reg_weight', 'lr', 'lr_sim_pretrain', 'lr_sim',
+               'sim_gamma_pretraining', 'sim_step_size_pretraining', 'sim_gamma', 'sim_step_size', 'tau',
                'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'dims']
     hparam_dict = dict(zip(hparams, [config[hparam] for hparam in hparams]))
 
