@@ -61,7 +61,7 @@ def set_up_model_and_preprocessing(args):
     # optimisers
     optimizer_enc = torch.optim.Adam(list(model.submodules['enc'].parameters()), lr=config['lr'])
     optimizer_dec = torch.optim.Adam(list(model.submodules['dec'].parameters()), lr=config['lr'])
-    optimizer_sim_pretraining = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
+    optimizer_sim_pretraining = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim_pretrain'])
     optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
 
     # lr schedulers
