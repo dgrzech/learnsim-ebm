@@ -283,8 +283,6 @@ def train(args):
                 # tensorboard
                 if GLOBAL_STEP % config['log_period'] == 0:
                     with torch.no_grad():
-                        loss_similarity = loss_similarity.mean()
-
                         writer.add_scalar('pretrain_model/train/loss_similarity', loss_similarity.item(), GLOBAL_STEP)
                         wandb_data['pretrain_model']['loss_similarity'] = loss_similarity.item()
 
@@ -425,7 +423,6 @@ def train(args):
         # SIMILARITY METRIC
         with torch.no_grad():
             moving_warped = model(input)
-            input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
 
         sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
 
@@ -444,11 +441,11 @@ def train(args):
             exponent = 1
             reg_energy = torch.exp(-1.0 * (loss_minus.mean() - loss_plus.mean()) ** exponent)
         elif config['reg_energy_type'] == 'tikhonov':
-            reg_energy = (loss_plus.mean() + loss_minus.mean()) ** 2
+            reg_energy = (loss_plus.mean() - loss_minus.mean()) ** 2
         else:
             raise NotImplementedError
 
-        loss_sim = loss_plus.mean() - loss_minus.mean() + alpha * reg_energy
+        loss_sim = loss_sim + alpha * reg_energy
 
         optimizer_sim.zero_grad(set_to_none=True)
         loss_sim.backward()
@@ -459,8 +456,6 @@ def train(args):
         # tensorboard
         if GLOBAL_STEP % config['log_period'] == 0:
             with torch.no_grad():
-                loss_sim = loss_sim.mean()
-
                 writer.add_scalar('train/loss_similarity', loss_sim.item(), GLOBAL_STEP)
                 wandb_data = {'train': {'loss_similarity': loss_sim.item()}}
 
