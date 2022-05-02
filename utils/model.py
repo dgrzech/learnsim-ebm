@@ -97,27 +97,18 @@ class SimilarityMetric(nn.Module):
 
         if enable_spectral_norm:
             self.conv1 = spectral_norm(nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias))
-            self.down1 = spectral_norm(nn.Conv3d(8, 8, kernel_size=3, padding=1, stride=2, bias=use_bias))
             self.conv2 = spectral_norm(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
-            self.down2 = spectral_norm(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=2, bias=use_bias))
             self.conv3 = spectral_norm(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
-            self.down3 = spectral_norm(nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=use_bias))
         else:
             self.conv1 = nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias)
-            self.down1 = nn.Conv3d(8, 8, kernel_size=3, padding=1, stride=2, bias=use_bias)
             self.conv2 = nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias)
-            self.down2 = nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=2, bias=use_bias)
             self.conv3 = nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias)
-            self.down3 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
 
     def forward(self, input, reduction='mean'):
         y1 = self.activation_fn(self.conv1(input))
-        y2 = self.down1(y1)
-        y2 = self.activation_fn(self.conv2(y2))
-        y3 = self.down2(y2)
-        y3 = self.activation_fn(self.conv3(y3))
-        y4 = self.down3(y3)
-        y4 = y4.reshape(y4.size(0), -1) ** 2
+        y2 = self.activation_fn(self.conv2(y1))
+        y3 = self.activation_fn(self.conv3(y2))
+        y4 = y3.reshape(y3.size(0), -1) ** 2
 
         if reduction == 'mean':
             return y4.mean(dim=1)
