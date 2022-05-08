@@ -96,24 +96,45 @@ class SimilarityMetric(nn.Module):
             self.activation_fn = lambda x: x
 
         if enable_spectral_norm:
-            self.conv1 = spectral_norm(nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias))
-            self.conv2 = spectral_norm(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
-            self.conv3 = spectral_norm(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
+            self.conv1 = spectral_norm(nn.Conv3d(2, 16, kernel_size=3, padding=1, bias=use_bias))
+            self.conv2 = spectral_norm(nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias))
+            self.conv3 = spectral_norm(nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias))
+            self.conv4 = spectral_norm(nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias))
+            self.conv5 = spectral_norm(nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias))
+            self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+            self.conv6 = spectral_norm(nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias))
         else:
-            self.conv1 = nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias)
-            self.conv2 = nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias)
-            self.conv3 = nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias)
+            self.conv1 = nn.Conv3d(2, 16, kernel_size=3, padding=1, bias=use_bias)
+            self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
+            self.conv3 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
+            self.conv4 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias)
+            self.conv5 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias)
+            self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+            self.conv6 = nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias)
 
-    def forward(self, input, reduction='mean'):
+        self.agg = nn.Conv1d(8, 1, kernel_size=1, stride=1, bias=False)
+
+    def forward(self, input, mask=None, reduction='mean'):
         y1 = self.activation_fn(self.conv1(input))
         y2 = self.activation_fn(self.conv2(y1))
         y3 = self.activation_fn(self.conv3(y2))
-        y4 = y3.reshape(y3.size(0), -1) ** 2
+        y4 = self.activation_fn(self.conv4(y3))
+        y5 = self.activation_fn(self.conv5(y4))
+        y5 = self.up1(y5)
+        y6 = self.activation_fn(self.conv6(y5))
+
+        N, C, D, H, W = y6.shape
+        y7 = self.agg(y6.view(N, C, -1)).view(N, 1, D, H, W)
+
+        if mask is not None:
+            y7 = y7[mask]
+
+        y7 = y7.reshape(N, -1) ** 2
 
         if reduction == 'mean':
-            return y4.mean(dim=1)
+            return y7.mean()
         elif reduction == 'sum':
-            return y4.sum(dim=1)
+            return y7.sum()
 
         raise NotImplementedError
 

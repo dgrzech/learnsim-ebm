@@ -85,10 +85,14 @@ class MI(nn.Module):
         return -1.0 * torch.mean(ent_x + ent_y - ent_joint)
 
 
-def SSD(im_fixed, im_moving, reduction='mean'):
+def SSD(im_fixed, im_moving, mask=None, reduction='mean'):
     z = (im_fixed - im_moving) ** 2
 
-    if reduction == 'mean':
-        return z.mean(dim=(1, 2, 3, 4))
+    if mask is not None:
+        z = z[mask]
+        z = z.reshape(im_fixed.size(0), -1)
 
-    return z.sum(dim=(1, 2, 3, 4))
+    if reduction == 'mean':
+        return z.mean()
+
+    return z.sum()

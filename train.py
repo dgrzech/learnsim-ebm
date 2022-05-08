@@ -44,13 +44,13 @@ def set_up_model_and_preprocessing(args):
     config['start_epoch'] = 1
 
     if config['loss_init'] == 'ssd':
-        loss_init = lambda x: SSD(x[:, 1:2], x[:, 0:1])
+        loss_init = lambda x, y: SSD(x[:, 1:2], x[:, 0:1], mask=y)
     elif config['loss_init'] == 'lcc':
         lcc_module = LCC().to(DEVICE, non_blocking=True)
-        loss_init = lambda x: lcc_module(x[:, 1:2], x[:, 0:1])
+        loss_init = lambda x, y: lcc_module(x[:, 1:2], x[:, 0:1])
     elif config['loss_init'] == 'mi':
         mi_module = MI().to(DEVICE, non_blocking=True)
-        loss_init = lambda x: mi_module(x[:, 1:2], x[:, 0:1])
+        loss_init = lambda x, y: mi_module(x[:, 1:2], x[:, 0:1])
     else:
         raise NotImplementedError(f'Loss {args.loss} not supported')
 
@@ -125,7 +125,7 @@ def generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, wri
         sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
         input_minus = torch.cat((moving_warped, sample_minus_noise), dim=1)
 
-        loss_minus = sim(input_minus, reduction='sum')
+        loss_minus = sim(input_minus, mask=fixed['mask'], reduction='sum')
         loss_minus = loss_minus.sum()
 
         optimizer_minus.zero_grad(set_to_none=True)
@@ -225,7 +225,7 @@ def train(args):
             moving_warped = model(input)
             input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
 
-            data_term = loss_init(input_warped)
+            data_term = loss_init(input_warped, fixed['mask'])
             reg_term = model.regularizer()
             loss_registration = data_term + reg_weight * reg_term
 
@@ -245,8 +245,13 @@ def train(args):
                     writer.add_scalar('pretrain_model/train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain_model/train/loss_registration', loss_registration.item(), GLOBAL_STEP)
 
+                    fixed_masked = fixed['im'] * fixed['mask']
+                    moving_masked = moving['im'] * moving['mask']
+
                     writer.add_images('pretrain_model/fixed', fixed['im'][:, :, fixed['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/moving', moving['im'][:, :, moving['im'].size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('pretrain_model/fixed_masked', fixed_masked[:, :, fixed_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('pretrain_model/moving_masked', moving_masked[:, :, moving_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
@@ -257,7 +262,9 @@ def train(args):
                                                      'fixed': utils.plot_tensor(fixed['im']),
                                                      'moving': utils.plot_tensor(moving['im']),
                                                      'moving_warped': utils.plot_tensor(moving_warped),
-                                                     'transformation': utils.plot_tensor(grid_warped)}}
+                                                     'transformation': utils.plot_tensor(grid_warped),
+                                                     'fixed_masked': utils.plot_tensor(fixed_masked),
+                                                     'moving_masked': utils.plot_tensor(moving_masked)}}
 
             # SIMILARITY METRIC
             if not args.baseline:
@@ -266,15 +273,23 @@ def train(args):
                 sim.train()
 
                 with torch.no_grad():
-                    rand1, rand2 = torch.rand_like(fixed['im']), torch.rand_like(moving['im'])
-                    cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped])) + list(itertools.product([rand1, rand2], [rand1, rand2]))
+                    cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
                     inputs = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod]
 
+                    rand1, rand2 = torch.rand_like(fixed['im']), torch.rand_like(moving['im'])
+                    cartesian_prod_rand = list(itertools.product([rand1, rand2], [rand1, rand2]))
+                    inputs_rand = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod_rand]
+
+                no_samples = len(inputs) + len(inputs_rand)
                 loss_similarity = 0.0
 
                 for input in inputs:
-                    data_term_sim, data_term_sim_pred = loss_init(input), sim(input)
-                    loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / len(cartesian_prod)
+                    data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input)
+                    loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
+
+                for input in inputs_rand:
+                    data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input)
+                    loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
 
                 optimizer_sim_pretraining.zero_grad(set_to_none=True)
                 loss_similarity.backward()
@@ -315,23 +330,33 @@ def train(args):
 
                     input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
 
-                    data_term = loss_init(input_warped)
+                    data_term = loss_init(input_warped, fixed['mask'])
                     reg_term = model.regularizer()
                     loss_val_registration += data_term + reg_weight * reg_term
 
                     dsc[idx, :] = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)
 
                     if not args.baseline:
+                        cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
+                        inputs = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod]
+
                         rand1, rand2 = torch.rand_like(fixed['im']), torch.rand_like(moving['im'])
-                        cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped])) + list(itertools.product([rand1, rand2], [rand1, rand2]))
+                        cartesian_prod_rand = list(itertools.product([rand1, rand2], [rand1, rand2]))
+                        inputs_rand = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod_rand]
 
-                        for el in cartesian_prod:
-                            input = torch.cat((el[0], el[1]), dim=1)
+                        no_samples = len(cartesian_prod) + len(cartesian_prod_rand)
 
-                            data_term = loss_init(input)
+                        for input in inputs:
+                            data_term = loss_init(input, torch.ones_like(fixed['mask']))
                             data_term_pred = sim(input)
 
-                            loss_val_similarity += F.l1_loss(data_term_pred, data_term) / len(cartesian_prod)
+                            loss_val_similarity += F.l1_loss(data_term_pred, data_term) / no_samples
+
+                        for input in inputs_rand:
+                            data_term = loss_init(input, torch.ones_like(fixed['mask']))
+                            data_term_pred = sim(input)
+
+                            loss_val_similarity += F.l1_loss(data_term_pred, data_term) / no_samples
 
                 # tensorboard
                 writer.add_scalar('pretrain_model/val/loss_registration', loss_val_registration.item() / len(dataloader_val), GLOBAL_STEP)
@@ -382,7 +407,7 @@ def train(args):
             moving_warped = model(input)
             input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
 
-            data_term = sim(input_warped)
+            data_term = sim(input_warped, mask=fixed['mask'])
             reg_term = model.regularizer()
             loss_registration = data_term + reg_weight * reg_term
 
@@ -403,10 +428,15 @@ def train(args):
 
                     grid_warped = model.warp_image(grid)
 
+                    fixed_masked = fixed['im'] * fixed['mask']
+                    moving_masked = moving['im'] * moving['mask']
+
                     writer.add_images('train/fixed', fixed['im'][:, :, fixed['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('train/moving', moving['im'][:, :, moving['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('train/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('train/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('train/fixed_masked', fixed_masked[:, :, fixed_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('train/moving_masked', moving_masked[:, :, moving_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
 
                     wandb_data = {'train': {'loss_data': data_term.item(),
                                             'loss_regularisation': reg_weight * reg_term.item(),
@@ -414,7 +444,9 @@ def train(args):
                                             'fixed': utils.plot_tensor(fixed['im']),
                                             'moving': utils.plot_tensor(moving['im']),
                                             'moving_warped': utils.plot_tensor(moving_warped),
-                                            'transformation': utils.plot_tensor(grid_warped)}}
+                                            'transformation': utils.plot_tensor(grid_warped),
+                                            'fixed_masked': utils.plot_tensor(fixed_masked),
+                                            'moving_masked': utils.plot_tensor(moving_masked)}}
 
                     wandb.log(wandb_data)
 
@@ -431,9 +463,9 @@ def train(args):
         sim.train()
 
         input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
-        loss_plus = sim(input_plus)
+        loss_plus = sim(input_plus, mask=fixed['mask'])
         input_minus = torch.cat((moving_warped, sample_minus), dim=1)
-        loss_minus = sim(input_minus)
+        loss_minus = sim(input_minus, mask=fixed['mask'])
 
         loss_sim = loss_plus.mean() - loss_minus.mean()
 
@@ -474,7 +506,7 @@ def train(args):
                         moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
                     input = torch.cat((moving['im'], fixed['im']), dim=1)
-                    _ = model(input)
+                    model(input)
                     seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
 
                     dsc[idx, :] = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)

@@ -102,6 +102,9 @@ class BaseImageRegistrationDataset(Dataset):
         mask_fixed, _ = self._get_mask(ID_fixed)
         seg_fixed, _ = self._get_seg(ID_fixed)
 
+        if self.mask_filename == '':
+            mask_fixed = (seg_fixed != 0)
+
         return {'im': im_fixed, 'mask': mask_fixed, 'seg': seg_fixed}
 
     def _get_moving(self, idx):
@@ -111,6 +114,9 @@ class BaseImageRegistrationDataset(Dataset):
         im_moving, _ = self._get_im(ID_moving)
         mask_moving, _ = self._get_mask(ID_moving)
         seg_moving, _ = self._get_seg(ID_moving)
+
+        if self.mask_filename == '':
+            mask_moving = (seg_moving != 0)
 
         return {'im': im_moving, 'mask': mask_moving, 'seg': seg_moving}
 
