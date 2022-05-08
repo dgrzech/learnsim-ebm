@@ -250,8 +250,8 @@ def train(args):
 
                     writer.add_images('pretrain_model/fixed', fixed['im'][:, :, fixed['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/moving', moving['im'][:, :, moving['im'].size(2) // 2, ...], GLOBAL_STEP)
-                    writer.add_images('pretrain_model/fixed_masked', fixed_masked[:, :, fixed_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
-                    writer.add_images('pretrain_model/moving_masked', moving_masked[:, :, moving_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('pretrain_model/fixed_masked', fixed_masked[:, :, fixed_masked.size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('pretrain_model/moving_masked', moving_masked[:, :, moving_masked.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('pretrain_model/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
 
@@ -435,8 +435,8 @@ def train(args):
                     writer.add_images('train/moving', moving['im'][:, :, moving['im'].size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('train/moving_warped', moving_warped[:, :, moving_warped.size(2) // 2, ...], GLOBAL_STEP)
                     writer.add_images('train/transformation', grid_warped[:, 0:1, grid_warped.size(2) // 2, ...], GLOBAL_STEP)
-                    writer.add_images('train/fixed_masked', fixed_masked[:, :, fixed_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
-                    writer.add_images('train/moving_masked', moving_masked[:, :, moving_masked['im'].size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('train/fixed_masked', fixed_masked[:, :, fixed_masked.size(2) // 2, ...], GLOBAL_STEP)
+                    writer.add_images('train/moving_masked', moving_masked[:, :, moving_masked.size(2) // 2, ...], GLOBAL_STEP)
 
                     wandb_data = {'train': {'loss_data': data_term.item(),
                                             'loss_regularisation': reg_weight * reg_term.item(),
