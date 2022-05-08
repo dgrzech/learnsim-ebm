@@ -90,9 +90,10 @@ def SSD(im_fixed, im_moving, mask=None, reduction='mean'):
 
     if mask is not None:
         z = z[mask]
-        z = z.reshape(im_fixed.size(0), -1)
 
     if reduction == 'mean':
         return z.mean()
+    elif reduction == 'sum':
+        return z.sum()
 
-    return z.sum()
+    raise NotImplementedError

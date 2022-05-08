@@ -129,7 +129,7 @@ class SimilarityMetric(nn.Module):
         if mask is not None:
             y7 = y7[mask]
 
-        y7 = y7.reshape(N, -1) ** 2
+        y7 = y7 ** 2
 
         if reduction == 'mean':
             return y7.mean()
