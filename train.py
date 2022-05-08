@@ -1,19 +1,17 @@
 import argparse
-import json
-import os
-from datetime import datetime
-
 import itertools
-
+import json
 import numpy as np
+import os
 import torch
 import torch.nn.functional as F
+import utils
+import wandb
+
+from datetime import datetime
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-import wandb
-
-import utils
 from utils import LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet, calc_dsc, init_grid_im, write_json
 
 DEVICE = torch.device('cuda:0')
@@ -449,6 +447,7 @@ def train(args):
                                             'moving_masked': utils.plot_tensor(moving_masked)}}
 
                     wandb.log(wandb_data)
+                    plt.close('all')
 
             GLOBAL_STEP += 1
 
@@ -522,6 +521,7 @@ def train(args):
                     wandb_data['validation'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
 
                 wandb.log(wandb_data)
+                plt.close('all')
 
         save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
                    scheduler_sim_pretraining, scheduler_sim)
