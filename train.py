@@ -455,10 +455,11 @@ def train(args):
         with torch.no_grad():
             moving_warped = model(input)
 
-        sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
-
         enc.eval()
         dec.eval()
+
+        sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
+
         sim.train()
 
         input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
