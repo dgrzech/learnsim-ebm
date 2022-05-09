@@ -104,7 +104,7 @@ def save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_p
     torch.save(state_dict, path)
 
 
-def generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer):
+def generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer):
     global GLOBAL_STEP
 
     no_samples_SGLD = config['no_samples_SGLD']
@@ -113,11 +113,22 @@ def generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, wri
         optimizer_LD_minus = torch.optim.Adam([sample_minus], lr=config['tau'])
         return optimizer_LD_minus
 
-    sample_minus = torch.rand_like(fixed['im']).detach()
-    sample_minus.requires_grad_(True)
+    def init_sample_minus(config, fixed):
+        if config['init_sample_minus'] == 'rand':
+            sample_minus = torch.rand_like(fixed['im']).detach()
+        elif config['init_sample_minus'] == 'fixed':
+            sample_minus = fixed['im'].clone().detach()
+        else:
+            raise NotImplementedError
 
+        sample_minus.requires_grad_(True)
+        return sample_minus
+
+    sample_minus = init_sample_minus(config, fixed)
     optimizer_minus = init_optimizers_LD(config, sample_minus)
-    sigma_minus, tau = torch.ones_like(sample_minus), config['tau']
+
+    with torch.no_grad():
+        sigma_minus, tau = torch.ones_like(sample_minus), config['tau']
 
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
@@ -458,7 +469,7 @@ def train(args):
         with torch.no_grad():
             moving_warped = model(input)
 
-        sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
+        sample_minus = generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer)
 
         sim.train()
 
