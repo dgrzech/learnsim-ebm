@@ -452,11 +452,11 @@ def train(args):
             GLOBAL_STEP += 1
 
         # SIMILARITY METRIC
-        with torch.no_grad():
-            moving_warped = model(input)
-
         enc.eval()
         dec.eval()
+
+        with torch.no_grad():
+            moving_warped = model(input)
 
         sample_minus = generate_samples_from_EBM(config, epoch, enc, sim, fixed, moving_warped, writer)
 
