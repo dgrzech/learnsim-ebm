@@ -129,6 +129,7 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer):
 
     with torch.no_grad():
         sigma_minus, tau = torch.ones_like(sample_minus), config['tau']
+        sigma_minus.requires_grad_(False)
 
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)

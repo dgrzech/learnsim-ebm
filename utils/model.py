@@ -96,7 +96,7 @@ class SimilarityMetric(nn.Module):
             self.activation_fn = lambda x: x
 
         if enable_spectral_norm:
-            self.conv1 = spectral_norm(nn.Conv3d(2, 16, kernel_size=3, padding=1, bias=use_bias))
+            self.conv1 = spectral_norm(nn.Conv3d(1, 16, kernel_size=3, padding=1, bias=use_bias))
             self.conv2 = spectral_norm(nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias))
             self.conv3 = spectral_norm(nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias))
             self.conv4 = spectral_norm(nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias))
@@ -104,7 +104,7 @@ class SimilarityMetric(nn.Module):
             self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
             self.conv6 = spectral_norm(nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias))
         else:
-            self.conv1 = nn.Conv3d(2, 16, kernel_size=3, padding=1, bias=use_bias)
+            self.conv1 = nn.Conv3d(1, 16, kernel_size=3, padding=1, bias=use_bias)
             self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
             self.conv3 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
             self.conv4 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias)
@@ -114,8 +114,8 @@ class SimilarityMetric(nn.Module):
 
         self.agg = nn.Conv1d(8, 1, kernel_size=1, stride=1, bias=False)
 
-    def forward(self, input, mask=None, reduction='mean'):
-        y1 = self.activation_fn(self.conv1(input))
+    def _forward(self, im):
+        y1 = self.activation_fn(self.conv1(im))
         y2 = self.activation_fn(self.conv2(y1))
         y3 = self.activation_fn(self.conv3(y2))
         y4 = self.activation_fn(self.conv4(y3))
@@ -126,15 +126,24 @@ class SimilarityMetric(nn.Module):
         N, C, D, H, W = y6.shape
         y7 = self.agg(y6.view(N, C, -1)).view(N, 1, D, H, W)
 
-        if mask is not None:
-            y7 = y7[mask]
+        return y7
 
-        y7 = y7 ** 2
+    def forward(self, input, mask=None, reduction='mean'):
+        im_fixed = input[:, 1:2]
+        im_moving_warped = input[:, 0:1]
+
+        z_fixed = self._forward(im_fixed)
+        z_moving_warped = self._forward(im_moving_warped)
+
+        z = (z_fixed - z_moving_warped) ** 2
+        
+        if mask is not None:
+            z = z[mask]
 
         if reduction == 'mean':
-            return y7.mean()
+            return z.mean()
         elif reduction == 'sum':
-            return y7.sum()
+            return z.sum()
 
         raise NotImplementedError
 
