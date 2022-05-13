@@ -14,6 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
 from utils import LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet, calc_dsc, init_grid_im, write_json
 
+
 DEVICE = torch.device('cuda:0')
 GLOBAL_STEP = 0
 separator = '----------------------------------------'
@@ -227,9 +228,9 @@ def train(args):
                 moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
             # REGISTRATION NETWORK
-            enc.train()
-            dec.train()
-            sim.eval()
+            enc.train(), enc.enable_grads()
+            dec.train(), dec.enable_grads()
+            sim.eval(), sim.disable_grads()
 
             input = torch.cat((moving['im'], fixed['im']), dim=1)
             moving_warped = model(input)
@@ -278,9 +279,9 @@ def train(args):
 
             # SIMILARITY METRIC
             if not args.baseline:
-                enc.eval()
-                dec.eval()
-                sim.train()
+                enc.eval(), enc.disable_grads()
+                dec.eval(), dec.disable_grads()
+                sim.train(), sim.enable_grads()
 
                 with torch.no_grad():
                     cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
@@ -321,9 +322,9 @@ def train(args):
 
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
-            enc.eval()
-            dec.eval()
-            sim.eval()
+            enc.eval(), enc.disable_grads()
+            dec.eval(), dec.disable_grads()
+            sim.eval(), sim.disable_grads()
 
             with torch.no_grad():
                 dsc = torch.zeros(len(dataloader_val), len(structures_dict))
@@ -409,9 +410,9 @@ def train(args):
                 moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
             # REGISTRATION NETWORK
-            enc.train()
-            dec.train()
-            sim.eval()
+            enc.train(), enc.enable_grads()
+            dec.train(), dec.enable_grads()
+            sim.eval(), sim.disable_grads()
 
             input = torch.cat((moving['im'], fixed['im']), dim=1)
             moving_warped = model(input)
@@ -464,15 +465,15 @@ def train(args):
             GLOBAL_STEP += 1
 
         # SIMILARITY METRIC
-        enc.eval()
-        dec.eval()
+        enc.eval(), enc.disable_grads()
+        dec.eval(), dec.disable_grads()
 
         with torch.no_grad():
             moving_warped = model(input)
 
         sample_minus = generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer)
 
-        sim.train()
+        sim.train(), sim.enable_grads()
 
         input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
         loss_plus = sim(input_plus, mask=fixed['mask'])

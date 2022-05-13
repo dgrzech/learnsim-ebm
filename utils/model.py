@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from abc import ABC
 from torch.nn.utils import spectral_norm
 
 
@@ -83,8 +85,18 @@ class Cubic_B_spline_FFD_3D(nn.Module):
 def transform(src, grid, interpolation='bilinear', padding='border'):
     return F.grid_sample(src, grid, mode=interpolation, align_corners=True, padding_mode=padding)
 
+
+class Model(ABC):
+    def enable_grads(self):
+        for p in self.parameters():
+            p.requires_grad_(True)
+
+    def disable_grads(self):
+        for p in self.parameters():
+            p.requires_grad_(False)
+
     
-class SimilarityMetric(nn.Module):
+class SimilarityMetric(nn.Module, Model):
     def __init__(self, activation_fn="tanh", enable_spectral_norm=True, use_bias=True):
         super(SimilarityMetric, self).__init__()
 
@@ -148,7 +160,7 @@ class SimilarityMetric(nn.Module):
         raise NotImplementedError
 
 
-class Encoder(nn.Module):
+class Encoder(nn.Module, Model):
     def __init__(self):
         super(Encoder, self).__init__()
 
@@ -173,7 +185,7 @@ class Encoder(nn.Module):
         return x6, x5, x4, x3, x2
 
 
-class Decoder(nn.Module):
+class Decoder(nn.Module, Model):
     def __init__(self, input_size, cps=None):
         super(Decoder, self).__init__()
 
