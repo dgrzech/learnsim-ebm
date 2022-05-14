@@ -61,12 +61,12 @@ def set_up_model_and_preprocessing(args):
     # optimisers
     optimizer_enc = torch.optim.Adam(list(model.submodules['enc'].parameters()), lr=config['lr'])
     optimizer_dec = torch.optim.Adam(list(model.submodules['dec'].parameters()), lr=config['lr'])
-    optimizer_sim_pretraining = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim_pretrain'])
+    optimizer_sim_pretrain = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim_pretrain'])
     optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
 
     # lr schedulers
-    scheduler_sim_pretraining = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretraining, config['sim_step_size_pretraining'], config['sim_gamma_pretraining'])
-    scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretraining, config['sim_step_size'], config['sim_gamma'])
+    scheduler_sim_pretrain = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretrain, config['sim_step_size_pretraining'], config['sim_gamma_pretraining'])
+    scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim, config['sim_step_size'], config['sim_gamma'])
 
     # resuming training
     if args.resume is not None:
@@ -77,30 +77,30 @@ def set_up_model_and_preprocessing(args):
         model.load_state_dict(checkpoint['model'])
         optimizer_enc.load_state_dict(checkpoint['optimizer_enc'])
         optimizer_dec.load_state_dict(checkpoint['optimizer_dec'])
-        optimizer_sim_pretraining.load_state_dict(checkpoint['optimizer_sim_pretraining'])
+        optimizer_sim_pretrain.load_state_dict(checkpoint['optimizer_sim_pretrain'])
         optimizer_sim.load_state_dict(checkpoint['optimizer_sim'])
 
-        scheduler_sim_pretraining.load_state_dict(checkpoint['scheduler_sim_pretraining'])
+        scheduler_sim_pretrain.load_state_dict(checkpoint['scheduler_sim_pretrain'])
         scheduler_sim.load_state_dict(checkpoint['scheduler_sim'])
 
     config_dict = {'config': config, 'loss_init': loss_init, 'model': model,
                    'optimizer_enc': optimizer_enc, 'optimizer_dec': optimizer_dec,
-                   'optimizer_sim_pretraining': optimizer_sim_pretraining, 'optimizer_sim': optimizer_sim,
-                   'scheduler_sim_pretraining': scheduler_sim_pretraining, 'scheduler_sim': scheduler_sim}
+                   'optimizer_sim_pretrain': optimizer_sim_pretrain, 'optimizer_sim': optimizer_sim,
+                   'scheduler_sim_pretrain': scheduler_sim_pretrain, 'scheduler_sim': scheduler_sim}
     print(config_dict)
 
     return config_dict
 
 
-def save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
-               scheduler_sim_pretraining, scheduler_sim):
+def save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim,
+               scheduler_sim_pretrain, scheduler_sim):
     global GLOBAL_STEP
 
     path = os.path.join(args.model_dir, f'checkpoint_{epoch}.pt')
     state_dict = {'epoch': epoch, 'step': GLOBAL_STEP, 'model': model.state_dict(),
                   'optimizer_enc': optimizer_enc.state_dict(), 'optimizer_dec': optimizer_dec.state_dict(),
-                  'optimizer_sim_pretraining': optimizer_sim_pretraining.state_dict(), 'optimizer_sim': optimizer_sim.state_dict(),
-                  'scheduler_sim_pretraining': scheduler_sim_pretraining.state_dict(), 'scheduler_sim': scheduler_sim.state_dict()}
+                  'optimizer_sim_pretrain': optimizer_sim_pretrain.state_dict(), 'optimizer_sim': optimizer_sim.state_dict(),
+                  'scheduler_sim_pretrain': scheduler_sim_pretrain.state_dict(), 'scheduler_sim': scheduler_sim.state_dict()}
 
     torch.save(state_dict, path)
 
@@ -168,8 +168,8 @@ def train(args):
     sim = model.submodules['sim']
 
     optimizer_enc, optimizer_dec = config_dict['optimizer_enc'], config_dict['optimizer_dec']
-    optimizer_sim_pretrain, optimizer_sim = config_dict['optimizer_sim_pretraining'], config_dict['optimizer_sim']
-    scheduler_sim_pretrain, scheduler_sim = config_dict['scheduler_sim_pretraining'], config_dict['scheduler_sim']
+    optimizer_sim_pretrain, optimizer_sim = config_dict['optimizer_sim_pretrain'], config_dict['optimizer_sim']
+    scheduler_sim_pretrain, scheduler_sim = config_dict['scheduler_sim_pretrain'], config_dict['scheduler_sim']
 
     # create output directories
     timestamp = datetime.now().strftime(r'%m%d_%H%M%S')
@@ -302,9 +302,9 @@ def train(args):
                     data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input)
                     loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
 
-                optimizer_sim_pretraining.zero_grad(set_to_none=True)
+                optimizer_sim_pretrain.zero_grad(set_to_none=True)
                 loss_similarity.backward()
-                optimizer_sim_pretraining.step()
+                optimizer_sim_pretrain.step()
 
                 # tensorboard
                 if GLOBAL_STEP % config['log_period'] == 0:
