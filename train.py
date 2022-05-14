@@ -45,16 +45,16 @@ def set_up_model_and_preprocessing(args):
     if config['loss_init'] == 'ssd':
         loss_init = lambda x, y: SSD(x[:, 1:2], x[:, 0:1], mask=y)
     elif config['loss_init'] == 'lcc':
-        lcc_module = LCC().to(DEVICE, non_blocking=True)
+        lcc_module = LCC().to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
         loss_init = lambda x, y: lcc_module(x[:, 1:2], x[:, 0:1])
     elif config['loss_init'] == 'mi':
-        mi_module = MI().to(DEVICE, non_blocking=True)
+        mi_module = MI().to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
         loss_init = lambda x, y: mi_module(x[:, 1:2], x[:, 0:1])
     else:
         raise NotImplementedError(f'Loss {args.loss} not supported')
 
     # model
-    model = UNet(config['dims'], activation_fn_sim=config['activation_fn_sim'], enable_spectral_norm=config['spectral_norm']).to(DEVICE, non_blocking=True)
+    model = UNet(config['dims'], activation_fn_sim=config['activation_fn_sim'], enable_spectral_norm=config['spectral_norm']).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
     no_params_sim, no_params_enc, no_params_dec = model.no_params
     print(f'NO. PARAMETERS OF THE SIMILARITY METRIC: {no_params_sim}, ENCODER: {no_params_enc}, DECODER: {no_params_dec}')
 
@@ -168,8 +168,8 @@ def train(args):
     sim = model.submodules['sim']
 
     optimizer_enc, optimizer_dec = config_dict['optimizer_enc'], config_dict['optimizer_dec']
-    optimizer_sim_pretraining, optimizer_sim = config_dict['optimizer_sim_pretraining'], config_dict['optimizer_sim']
-    scheduler_sim_pretraining, scheduler_sim = config_dict['scheduler_sim_pretraining'], config_dict['scheduler_sim']
+    optimizer_sim_pretrain, optimizer_sim = config_dict['optimizer_sim_pretraining'], config_dict['optimizer_sim']
+    scheduler_sim_pretrain, scheduler_sim = config_dict['scheduler_sim_pretraining'], config_dict['scheduler_sim']
 
     # create output directories
     timestamp = datetime.now().strftime(r'%m%d_%H%M%S')
@@ -318,7 +318,7 @@ def train(args):
             GLOBAL_STEP += 1
 
         if not args.baseline:
-            scheduler_sim_pretraining.step()
+            scheduler_sim_pretrain.step()
 
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
@@ -388,8 +388,8 @@ def train(args):
 
                 wandb.log(wandb_data)
 
-        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
-                   scheduler_sim_pretraining, scheduler_sim)
+        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim,
+                   scheduler_sim_pretrain, scheduler_sim)
 
     if args.baseline:
         return
@@ -537,8 +537,8 @@ def train(args):
                 wandb.log(wandb_data)
                 plt.close('all')
 
-        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretraining, optimizer_sim,
-                   scheduler_sim_pretraining, scheduler_sim)
+        save_model(args, epoch, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim,
+                   scheduler_sim_pretrain, scheduler_sim)
 
 
 if __name__ == '__main__':
