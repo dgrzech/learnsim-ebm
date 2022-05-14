@@ -235,7 +235,7 @@ class Decoder(nn.Module, Model):
         for i in range(ndim):
             grid[i] = 2. * grid[i] / (size[i] - 1) - 1.
 
-        return grid
+        return grid.unsqueeze(0)
 
     def integrate(self, vel, nb_steps):
         disp = vel / (2 ** nb_steps)
