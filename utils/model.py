@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from torch.nn.utils import spectral_norm
 
 
@@ -84,6 +84,130 @@ class Cubic_B_spline_FFD_3D(nn.Module):
 
 def transform(src, grid, interpolation='bilinear', padding='border'):
     return F.grid_sample(src, grid, mode=interpolation, align_corners=True, padding_mode=padding)
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, s=1, activation_fn=nn.Identity()):
+        super().__init__()
+
+        self.main = nn.Conv3d(in_channels, out_channels, kernel_size=2 * s + 1, stride=1, padding=s, padding_mode='replicate')
+        self.activation_fn = activation_fn
+
+        with torch.no_grad():
+            self.main.weight.multiply_(1e-7)
+            self.main.weight[..., s, s, s] = F.normalize(torch.rand_like(self.main.weight[..., s, s, s]), p=1, dim=0)
+
+            nn.init.zeros_(self.main.bias)
+            self.main.bias.add_(torch.randn_like(self.main.bias).multiply(1e-7))
+
+    def forward(self, x):
+        out = self.main(x)
+        return self.activation_fn(out)
+
+
+class UNetEncoder(nn.Module):
+    def __init__(self, no_features, s=1, activation_fn=nn.Identity()):
+        super(UNetEncoder, self).__init__()
+        self.enc = nn.ModuleList()
+        self.no_features = no_features
+        prev_no_features = 1
+
+        for no_features in self.no_features:
+            self.enc.append(ConvBlock(prev_no_features, no_features, s=s, activation_fn=activation_fn))
+            prev_no_features = no_features
+
+    def forward(self, im):
+        im_enc = [im]
+
+        for layer in self.enc:
+            im_enc.append(layer(im_enc[-1]))
+
+        return im_enc[-1]
+
+
+class BaseModel(nn.Module):
+    """
+    base class for all models
+    """
+
+    def __init__(self, no_features=None, activation_fn=nn.Identity()):
+        super(BaseModel, self).__init__()
+        self.no_features = no_features
+
+        try:
+            activation_fn = getattr(nn, activation_fn['type'])(**activation_fn['args'])
+        except:
+            pass
+
+        self.enc = UNetEncoder(no_features, activation_fn=activation_fn)
+        self.agg = nn.Conv1d(no_features[-1], 1, kernel_size=1, stride=1, bias=False)
+
+        with torch.no_grad():
+            nn.init.ones_(self.agg.weight)
+            self.agg.weight.add_(torch.randn_like(self.agg.weight).multiply(1e-7))
+
+        self.disable_grads()
+
+    def enable_grads(self):
+        for param in self.parameters():
+            param.requires_grad_(True)
+
+        self.train()
+
+    def disable_grads(self):
+        for param in self.parameters():
+            param.requires_grad_(False)
+
+        self.eval()
+
+    @abstractmethod
+    def encode(self, im_fixed, im_moving):
+        pass
+
+    def feature_extraction(self, im_fixed, im_moving):
+        z_fixed = self.enc(im_fixed)
+        N, C, D, H, W = z_fixed.shape
+        z_fixed = self.agg(z_fixed.view(N, C, -1)).view(N, 1, D, H, W)
+
+        z_moving = self.enc(im_moving)
+        z_moving = self.agg(z_moving.view(N, C, -1)).view(N, 1, D, H, W)
+
+        return z_fixed, z_moving
+
+    def forward(self, input, mask=None, reduction='mean'):
+        """
+        forward pass logic
+
+        :return: Model output
+        """
+
+        im_fixed = input[:, 1:2]
+        im_moving = input[:, 0:1]
+
+        z_fixed, z_moving = self.feature_extraction(im_fixed, im_moving)
+        z = self.encode(z_fixed, z_moving)
+
+        if mask is None:
+            mask = torch.ones_like(z)
+
+        return z.sum(dim=(1, 2, 3, 4)) / mask.sum(dim=(1, 2, 3, 4))
+
+    def __str__(self):
+        """
+        model prints with number of trainable parameters
+        """
+
+        model_parameters = list(self.parameters())
+        no_trainable_params = sum([np.prod(p.size()) for p in model_parameters])
+        return super().__str__() + '\ntrainable parameters: {}\n'.format(no_trainable_params)
+
+
+class CNN_SSD(BaseModel):
+    def __init__(self, no_features=None, activation_fn=nn.Identity()):
+        super(CNN_SSD, self).__init__(no_features, activation_fn)
+
+    def encode(self, im_fixed, im_moving):
+        return (im_fixed - im_moving) ** 2
 
 
 class Model(ABC):
@@ -320,7 +444,10 @@ class UNet(nn.Module):
         super(UNet, self).__init__()
 
         encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
-        sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm)
+        # sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm)
+
+        activation_fn_sim = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        sim = CNN_SSD(no_features=[4, 8, 8], activation_fn=activation_fn_sim)
 
         self.submodules = nn.ModuleDict({'enc': encoder, 'dec': decoder, 'sim': sim})
 

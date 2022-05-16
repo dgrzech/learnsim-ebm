@@ -12,7 +12,7 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-from utils import LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet, calc_dsc, init_grid_im, write_json
+from utils import LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet, CNN_SSD, calc_dsc, init_grid_im, write_json
 
 
 DEVICE = torch.device('cuda:0')
@@ -110,51 +110,54 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer):
 
     no_samples_SGLD = config['no_samples_SGLD']
     
-    def init_optimizers_LD(config, sample_minus):
-        optimizer_LD_minus = torch.optim.Adam([sample_minus], lr=config['tau'])
-        return optimizer_LD_minus
+    def init_optimizer_LD(config, sample_plus, sample_minus):
+        return torch.optim.Adam([sample_plus, sample_minus], lr=config['tau'])
 
-    def init_sample_minus(config, fixed):
+    def init_samples(config, fixed):
         if config['init_sample_minus'] == 'rand':
-            sample_minus = torch.rand_like(fixed['im']).detach()
+            sample_plus, sample_minus = torch.rand_like(fixed['im']).detach(), torch.rand_like(fixed['im']).detach()
         elif config['init_sample_minus'] == 'fixed':
-            sample_minus = fixed['im'].clone().detach()
+            sample_plus, sample_minus = fixed['im'].clone().detach(), fixed['im'].clone().detach()
         else:
             raise NotImplementedError
 
-        sample_minus.requires_grad_(True)
-        return sample_minus
+        sample_plus.requires_grad_(True), sample_minus.requires_grad_(True)
+        return sample_plus, sample_minus
 
-    sample_minus = init_sample_minus(config, fixed)
-    optimizer_minus = init_optimizers_LD(config, sample_minus)
+    sample_plus, sample_minus = init_samples(config, fixed)
+    optimizer_LD = init_optimizer_LD(config, sample_plus, sample_minus)
 
     with torch.no_grad():
-        sigma_minus, tau = torch.ones_like(sample_minus), config['tau']
-        sigma_minus.requires_grad_(False)
+        sigma, tau = torch.ones_like(sample_minus), config['tau']
+        sigma.requires_grad_(False)
 
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
-        sample_minus_noise = SGLD.apply(sample_minus, sigma_minus, tau)
-        input_minus = torch.cat((moving_warped, sample_minus_noise), dim=1)
+        sample_plus_noise, sample_minus_noise = SGLD.apply(sample_plus, sigma, tau), SGLD.apply(sample_minus, sigma, tau)
+        input_plus, input_minus = torch.cat((moving_warped, sample_plus_noise), dim=1), torch.cat((moving_warped, sample_minus_noise), dim=1)
 
-        loss_minus = sim(input_minus, mask=fixed['mask'], reduction='sum')
-        loss_minus = loss_minus.sum()
+        loss_plus = sim(input_plus)
+        loss_minus = sim(input_minus)
 
-        optimizer_minus.zero_grad(set_to_none=True)
-        loss_minus.backward()
-        optimizer_minus.step()
+        loss = (loss_plus - loss_minus) * fixed['mask'].sum()
+
+        optimizer_LD.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer_LD.step()
 
         with torch.no_grad():
+            writer.add_scalar(f'train/epoch_{epoch}/sample_plus_energy', loss_plus.item(), GLOBAL_STEP)
             writer.add_scalar(f'train/epoch_{epoch}/sample_minus_energy', loss_minus.item(), GLOBAL_STEP)
 
         GLOBAL_STEP += 1
 
     with torch.no_grad():
-        writer.add_images('train/sample_minus', sample_minus_noise[:, :, sample_minus_noise.size(2) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_plus', sample_plus[:, :, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_minus', sample_minus[:, :, sample_minus.size(2) // 2, ...], GLOBAL_STEP)
 
-    wandb_data = {'sample_minus': utils.plot_tensor(sample_minus)}
+    wandb_data = {'sample_plus': utils.plot_tensor(sample_plus), 'sample_minus': utils.plot_tensor(sample_minus)}
     wandb.log(wandb_data)
 
-    return torch.clamp(sample_minus, min=0.0, max=1.0).detach()
+    return torch.clamp(sample_plus, min=0.0, max=1.0).detach(), torch.clamp(sample_minus, min=0.0, max=1.0).detach()
 
 
 def train(args):
@@ -295,16 +298,16 @@ def train(args):
                 loss_similarity = 0.0
 
                 for input in inputs:
-                    data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input)
+                    data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
                     loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
 
                 for input in inputs_rand:
-                    data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input)
+                    data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
                     loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
 
-                optimizer_sim_pretrain.zero_grad(set_to_none=True)
-                loss_similarity.backward()
-                optimizer_sim_pretrain.step()
+                # optimizer_sim_pretrain.zero_grad(set_to_none=True)
+                # loss_similarity.backward()
+                # optimizer_sim_pretrain.step()
 
                 # tensorboard
                 if GLOBAL_STEP % config['log_period'] == 0:
@@ -359,13 +362,13 @@ def train(args):
 
                         for input in inputs:
                             data_term = loss_init(input, torch.ones_like(fixed['mask']))
-                            data_term_pred = sim(input)
+                            data_term_pred = sim(input).sum()
 
                             loss_val_similarity += F.l1_loss(data_term_pred, data_term) / no_samples
 
                         for input in inputs_rand:
                             data_term = loss_init(input, torch.ones_like(fixed['mask']))
-                            data_term_pred = sim(input)
+                            data_term_pred = sim(input).sum()
 
                             loss_val_similarity += F.l1_loss(data_term_pred, data_term) / no_samples
 
@@ -471,11 +474,11 @@ def train(args):
         with torch.no_grad():
             moving_warped = model(input)
 
-        sample_minus = generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer)
+        sample_plus, sample_minus = generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer)
 
         sim.train(), sim.enable_grads()
 
-        input_plus = torch.cat((moving_warped, fixed['im']), dim=1)
+        input_plus = torch.cat((moving_warped, sample_plus), dim=1)
         loss_plus = sim(input_plus, mask=fixed['mask'])
         input_minus = torch.cat((moving_warped, sample_minus), dim=1)
         loss_minus = sim(input_minus, mask=fixed['mask'])
