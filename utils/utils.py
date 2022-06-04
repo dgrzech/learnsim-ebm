@@ -1,10 +1,48 @@
 import json
 import math
+import numpy as np
 import os
 import torch
+import torch.nn.functional as F
 
 from matplotlib import pyplot as plt
 from pathlib import Path
+from torch import nn
+
+
+class GradientOperator(nn.Module):
+    def __init__(self):
+        super(GradientOperator, self).__init__()
+
+        # paddings
+        self.px = [0, 1, 0, 0, 0, 0]
+        self.py = [0, 0, 0, 1, 0, 0]
+        self.pz = [0, 0, 0, 0, 0, 1]
+
+        # F.grid_sample(..) takes values in range (-1, 1), so needed for det(J) = 1 when the transformation is identity
+        self.pixel_spacing = None
+
+    def _set_spacing(self, field):
+        dims = np.asarray(field.shape[2:])
+        self.pixel_spacing = 2.0 / (dims - 1.0)
+
+    def forward(self, field):
+        self._set_spacing(field)
+
+        # forward differences
+        d_dx = F.pad(field[:, :, :, :, 1:] - field[:, :, :, :, :-1], self.px, mode='replicate')
+        d_dy = F.pad(field[:, :, :, 1:] - field[:, :, :, :-1], self.py, mode='replicate')
+        d_dz = F.pad(field[:, :, 1:] - field[:, :, :-1], self.pz, mode='replicate')
+
+        d_dx /= self.pixel_spacing[2]
+        d_dy /= self.pixel_spacing[1]
+        d_dz /= self.pixel_spacing[0]
+
+        nabla_x = torch.stack((d_dx[:, 0], d_dy[:, 0], d_dz[:, 0]), 1)
+        nabla_y = torch.stack((d_dx[:, 1], d_dy[:, 1], d_dz[:, 1]), 1)
+        nabla_z = torch.stack((d_dx[:, 2], d_dy[:, 2], d_dz[:, 2]), 1)
+
+        return torch.stack([nabla_x, nabla_y, nabla_z], dim=-1)
 
 
 def add_noise_Langevin(field, sigma, tau):
@@ -14,6 +52,38 @@ def add_noise_Langevin(field, sigma, tau):
 def get_noise_Langevin(sigma, tau):
     eps = torch.randn_like(sigma)
     return math.sqrt(2.0 * tau) * sigma * eps
+
+
+def calc_det_J(nabla):
+    """
+    calculate the Jacobian determinant of a vector field
+    :param nabla: field gradients
+    :return: Jacobian determinant
+    """
+
+    # _, N, D, H, W, _ = nabla.shape
+    # Jac = nabla.permute([0, 2, 3, 4, 1, 5]).reshape([-1, N, N])
+    # return torch.det(Jac).reshape(-1, D, H, W)  # NOTE (DG): for some reason causes an illegal memory access
+
+    nabla_x = nabla[..., 0]
+    nabla_y = nabla[..., 1]
+    nabla_z = nabla[..., 2]
+
+    det_J = nabla_x[:, 0] * nabla_y[:, 1] * nabla_z[:, 2] + \
+            nabla_y[:, 0] * nabla_z[:, 1] * nabla_x[:, 2] + \
+            nabla_z[:, 0] * nabla_x[:, 1] * nabla_y[:, 2] - \
+            nabla_x[:, 2] * nabla_y[:, 1] * nabla_z[:, 0] - \
+            nabla_y[:, 2] * nabla_z[:, 1] * nabla_x[:, 0] - \
+            nabla_z[:, 2] * nabla_x[:, 1] * nabla_y[:, 0]
+    det_J *= -1.0  # NOTE (DG): ugly hack
+
+    return det_J
+
+
+def calc_no_non_diffeomorphic_voxels(transformation, diff_op=GradientOperator()):
+    nabla = diff_op(transformation)
+    log_det_J_transformation = torch.log(calc_det_J(nabla))
+    return torch.sum(torch.isnan(log_det_J_transformation), dim=(1, 2, 3))
 
 
 @torch.no_grad()

@@ -12,7 +12,8 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-from utils import CNN_SSD, LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet, calc_DSC, init_grid_im, log_images, save_model, write_hparams, write_json
+from utils import CNN_SSD, LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet,\
+    calc_DSC, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, save_model, write_hparams, write_json
 
 
 DEVICE = torch.device('cuda:0')
@@ -251,23 +252,30 @@ def train(args):
                             data_term, reg_term, loss_registration = data_term.mean(), reg_term.mean(), loss_registration.mean()
                             grid_warped = model.warp_image(grid)
 
+                            non_diffeomorphic_voxels = calc_no_non_diffeomorphic_voxels(model.get_T2())
+                            non_diffeomorphic_voxels_pct = non_diffeomorphic_voxels / np.prod(fixed['im'].shape)
+
                             writer.add_scalar('pretrain/train/loss_data', data_term.item(), GLOBAL_STEP)
                             writer.add_scalar('pretrain/train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                             writer.add_scalar('pretrain/train/loss_registration', loss_registration.item(), GLOBAL_STEP)
+                            writer.add_scalar('pretrain/train/non_diffeomorphic_voxels', non_diffeomorphic_voxels.item(), GLOBAL_STEP)
+                            writer.add_scalar('pretrain/train/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct.item(), GLOBAL_STEP)
 
                             fixed_masked = fixed['im'] * fixed['mask']
                             moving_masked = moving['im'] * moving['mask']
 
                             log_images(writer, GLOBAL_STEP, fixed, moving, fixed_masked, moving_masked, moving_warped, grid_warped, 'pretrain')
                             wandb_data['pretrain'].update({'loss_data': data_term.item(),
-                                                                 'loss_regularisation': reg_weight * reg_term.item(),
-                                                                 'loss_registration': loss_registration.item(),
-                                                                 'fixed': utils.plot_tensor(fixed['im']),
-                                                                 'moving': utils.plot_tensor(moving['im']),
-                                                                 'moving_warped': utils.plot_tensor(moving_warped),
-                                                                 'transformation': utils.plot_tensor(grid_warped, grid=True),
-                                                                 'fixed_masked': utils.plot_tensor(fixed_masked),
-                                                                 'moving_masked': utils.plot_tensor(moving_masked)})
+                                                            'loss_regularisation': reg_weight * reg_term.item(),
+                                                            'loss_registration': loss_registration.item(),
+                                                            'non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
+                                                            'non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item(),
+                                                            'fixed': utils.plot_tensor(fixed['im']),
+                                                            'moving': utils.plot_tensor(moving['im']),
+                                                            'moving_warped': utils.plot_tensor(moving_warped),
+                                                            'transformation': utils.plot_tensor(grid_warped, grid=True),
+                                                            'fixed_masked': utils.plot_tensor(fixed_masked),
+                                                            'moving_masked': utils.plot_tensor(moving_masked)})
 
                 # SIMILARITY METRIC
                 if not args.baseline and args.pretrain_sim:
@@ -323,6 +331,8 @@ def train(args):
 
                 with torch.no_grad():
                     dsc = torch.zeros(len(dataloader_val), len(structures_dict))
+                    non_diffeomorphic_voxels, non_diffeomorphic_voxels_pct = torch.zeros(len(dataloader_val)), torch.zeros(len(dataloader_val))
+
                     loss_val_registration, loss_val_similarity = 0.0, 0.0
 
                     for idx, (fixed, moving) in enumerate(dataloader_val):
@@ -341,6 +351,8 @@ def train(args):
                         loss_val_registration += data_term + reg_weight * reg_term
 
                         dsc[idx, :] = calc_DSC(fixed['seg'], seg_moving_warped, structures_dict)
+                        non_diffeomorphic_voxels[idx] = calc_no_non_diffeomorphic_voxels(model.get_T2())
+                        non_diffeomorphic_voxels_pct[idx] = non_diffeomorphic_voxels[idx] / np.prod(fixed['im'].shape)
 
                         if not args.baseline:
                             cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
@@ -368,10 +380,17 @@ def train(args):
                     writer.add_scalar('pretrain/val/loss_registration', loss_val_registration.item() / len(dataloader_val), GLOBAL_STEP)
 
                     dsc_mean = torch.mean(dsc, dim=0)
+                    non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
+                    non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
+
                     writer.add_scalar('pretrain/val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
+                    writer.add_scalar('pretrain/val/non_diffeomorphic_voxels', non_diffeomorphic_voxels_mean.item(), GLOBAL_STEP)
+                    writer.add_scalar('pretrain/val/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct_mean.item(), GLOBAL_STEP)
 
                     wandb_data = {'pretrain_val': {'loss_registration': loss_val_registration.item(),
-                                                   'metric_dsc_avg': torch.mean(dsc_mean).item()}}
+                                                   'metric_dsc_avg': torch.mean(dsc_mean).item(),
+                                                   'non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
+                                                   'non_diffeomorphic_voxels_pct_mean': non_diffeomorphic_voxels_pct_mean.item()}}
 
                     for structure_idx, structure_name in enumerate(structures_dict):
                         writer.add_scalar(f'pretrain/val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
@@ -427,10 +446,14 @@ def train(args):
             if GLOBAL_STEP % config['log_period'] == 0:
                 with torch.no_grad():
                     data_term, reg_term, loss_registration = data_term.mean(), reg_term.mean(), loss_registration.mean()
+                    non_diffeomorphic_voxels = calc_no_non_diffeomorphic_voxels(model.get_T2())
+                    non_diffeomorphic_voxels_pct = non_diffeomorphic_voxels / np.prod(fixed['im'].shape)
 
                     writer.add_scalar('train/loss_data', data_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
                     writer.add_scalar('train/loss_registration', loss_registration.item(), GLOBAL_STEP)
+                    writer.add_scalar('train/non_diffeomorphic_voxels', non_diffeomorphic_voxels.item(), GLOBAL_STEP)
+                    writer.add_scalar('train/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct.item(), GLOBAL_STEP)
 
                     grid_warped = model.warp_image(grid)
 
@@ -442,6 +465,8 @@ def train(args):
                     wandb_data = {'train': {'loss_data': data_term.item(),
                                             'loss_regularisation': reg_weight * reg_term.item(),
                                             'loss_registration': loss_registration.item(),
+                                            'non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
+                                            'non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item(),
                                             'fixed': utils.plot_tensor(fixed['im']),
                                             'moving': utils.plot_tensor(moving['im']),
                                             'moving_warped': utils.plot_tensor(moving_warped),
@@ -503,6 +528,7 @@ def train(args):
         if epoch == start_epoch or epoch % config['val_period'] == 0:
             with torch.no_grad():
                 dsc = torch.zeros(len(dataloader_val), len(structures_dict))
+                non_diffeomorphic_voxels, non_diffeomorphic_voxels_pct = torch.zeros(len(dataloader_val)), torch.zeros(len(dataloader_val))
 
                 for idx, (fixed, moving) in enumerate(dataloader_val):
                     for key in fixed:
@@ -514,12 +540,21 @@ def train(args):
                     seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
 
                     dsc[idx, :] = calc_DSC(fixed['seg'], seg_moving_warped, structures_dict)
+                    non_diffeomorphic_voxels[idx] = calc_no_non_diffeomorphic_voxels(model.get_T2())
+                    non_diffeomorphic_voxels_pct[idx] = non_diffeomorphic_voxels[idx] / np.prod(fixed['im'].shape)
 
                 # tensorboard
                 dsc_mean = torch.mean(dsc, dim=0)
-                writer.add_scalar('val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
+                non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
+                non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
 
-                wandb_data = {'validation': {'metric_dsc_avg': torch.mean(dsc_mean).item()}}
+                writer.add_scalar('val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
+                writer.add_scalar('val/non_diffeomorphic_voxels', non_diffeomorphic_voxels_mean.item(), GLOBAL_STEP)
+                writer.add_scalar('val/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct_mean.item(), GLOBAL_STEP)
+
+                wandb_data = {'validation': {'metric_dsc_avg': torch.mean(dsc_mean).item(),
+                                             'non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
+                                             'non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct_mean.item()}}
 
                 for structure_idx, structure_name in enumerate(structures_dict):
                     writer.add_scalar(f'val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)

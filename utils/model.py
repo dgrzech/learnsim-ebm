@@ -430,6 +430,7 @@ class Decoder(nn.Module, Model):
 
         self.disp, self.disp_inv = self.compute_disp(flow)
         self.T = self.move_grid_dims(self.grid + self.disp)
+        self.T2 = self.grid + self.disp  # NOTE (DG): ugly hack
         self.T_inv = self.move_grid_dims(self.grid + self.disp_inv)
 
         # extract first channel for warping
@@ -463,6 +464,9 @@ class UNet(nn.Module):
 
     def get_T(self):
         return self.submodules['dec'].T
+
+    def get_T2(self):
+        return self.submodules['dec'].T2
 
     def get_T_inv(self):
         return self.submodules['dec'].T_inv
