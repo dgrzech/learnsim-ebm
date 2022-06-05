@@ -93,35 +93,37 @@ def set_up_model_and_preprocessing(args):
     return config_dict
 
 
-def generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer):
+def generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, writer):
     global GLOBAL_STEP
 
     no_samples_SGLD = config['no_samples_SGLD']
     
-    def init_optimizer_LD(config, sample_plus, sample_minus):
-        return torch.optim.Adam([sample_plus, sample_minus], lr=config['tau'])
+    def init_optimizer_LD(config, sample_plus):
+        return torch.optim.Adam([sample_plus], lr=config['tau'])
 
-    def init_samples(config, fixed):
-        if config['init_sample_minus'] == 'rand':
-            sample_plus, sample_minus = torch.rand_like(fixed['im']).detach(), torch.rand_like(fixed['im']).detach()
-        elif config['init_sample_minus'] == 'fixed':
-            sample_plus, sample_minus = fixed['im'].clone().detach(), fixed['im'].clone().detach()
+    def init_sample(config, fixed):
+        if config['init_sample'] == 'rand':
+            sample_plus = torch.rand_like(fixed['im']).detach()
+        elif config['init_sample'] == 'fixed':
+            sample_plus = fixed['im'].clone().detach()
         else:
             raise NotImplementedError
 
-        sample_plus.requires_grad_(True), sample_minus.requires_grad_(True)
-        return sample_plus, sample_minus
+        sample_plus.requires_grad_(True)
+        return sample_plus
 
-    sample_plus, sample_minus = init_samples(config, fixed)
-    optimizer_LD = init_optimizer_LD(config, sample_plus, sample_minus)
+    sample_plus = init_sample(config, fixed)
+    optimizer_LD = init_optimizer_LD(config, sample_plus)
 
     with torch.no_grad():
-        sigma, tau = torch.ones_like(sample_minus), config['tau']
+        input_minus = torch.cat((moving['im'], fixed['im']), dim=1)
+
+        sigma, tau = torch.ones_like(sample_plus), config['tau']
         sigma.requires_grad_(False)
 
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
-        sample_plus_noise, sample_minus_noise = SGLD.apply(sample_plus, sigma, tau), SGLD.apply(sample_minus, sigma, tau)
-        input_plus, input_minus = torch.cat((moving_warped, sample_plus_noise), dim=1), torch.cat((moving_warped, sample_minus_noise), dim=1)
+        sample_plus_noise = SGLD.apply(sample_plus, sigma, tau)
+        input_plus = torch.cat((moving_warped, sample_plus_noise), dim=1)
 
         loss_plus = sim(input_plus)
         loss_minus = sim(input_minus)
@@ -134,7 +136,6 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer):
 
         with torch.no_grad():
             writer.add_scalar(f'train/epoch_{epoch}/sample_plus_energy', loss_plus.item(), GLOBAL_STEP)
-            writer.add_scalar(f'train/epoch_{epoch}/sample_minus_energy', loss_minus.item(), GLOBAL_STEP)
 
         GLOBAL_STEP += 1
 
@@ -142,15 +143,12 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer):
         writer.add_images('train/sample_plus/sagittal', sample_plus[:, :, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
         writer.add_images('train/sample_plus/coronal', sample_plus[:, :, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
         writer.add_images('train/sample_plus/axial', sample_plus[..., sample_plus.size(4) // 2], GLOBAL_STEP)
-        writer.add_images('train/sample_minus/sagittal', sample_minus[:, :, sample_minus.size(2) // 2, ...], GLOBAL_STEP)
-        writer.add_images('train/sample_minus/coronal', sample_minus[:, :, :, sample_minus.size(3) // 2, ...], GLOBAL_STEP)
-        writer.add_images('train/sample_minus/axial', sample_minus[..., sample_minus.size(4) // 2], GLOBAL_STEP)
 
-    wandb_data = {'sample_plus': utils.plot_tensor(sample_plus), 'sample_minus': utils.plot_tensor(sample_minus)}
+    wandb_data = {'sample_plus': utils.plot_tensor(sample_plus)}
     wandb.log(wandb_data)
     plt.close('all')
 
-    return torch.clamp(sample_plus, min=0.0, max=1.0).detach(), torch.clamp(sample_minus, min=0.0, max=1.0).detach()
+    return torch.clamp(sample_plus_noise, min=0.0, max=1.0).detach()
 
 
 def train(args):
@@ -386,7 +384,6 @@ def train(args):
                     writer.add_scalar('pretrain/val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain/val/non_diffeomorphic_voxels', non_diffeomorphic_voxels_mean.item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain/val/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct_mean.item(), GLOBAL_STEP)
-
                     wandb_data = {'pretrain_val': {'loss_registration': loss_val_registration.item(),
                                                    'metric_dsc_avg': torch.mean(dsc_mean).item(),
                                                    'non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
@@ -486,13 +483,13 @@ def train(args):
         with torch.no_grad():
             moving_warped = model(input)
 
-        sample_plus, sample_minus = generate_samples_from_EBM(config, epoch, sim, fixed, moving_warped, writer)
+        sample_plus = generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, writer)
 
         sim.train(), sim.enable_grads()
 
         input_plus = torch.cat((moving_warped, sample_plus), dim=1)
         loss_plus = sim(input_plus, mask=fixed['mask'])
-        input_minus = torch.cat((moving_warped, sample_minus), dim=1)
+        input_minus = torch.cat((moving['im'], fixed['im']), dim=1)
         loss_minus = sim(input_minus, mask=fixed['mask'])
 
         loss_sim = loss_plus.mean() - loss_minus.mean()

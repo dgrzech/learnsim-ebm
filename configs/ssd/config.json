@@ -15,7 +15,7 @@
 	"sim_gamma": 0.5,
 	"sim_step_size": 200,
 	"tau": 0.001,
-	"init_sample_minus": "rand",
+	"init_sample": "rand",
 	"batch_size": 1,
 	"no_samples_per_epoch": 100,
 	"no_samples_SGLD": 2000,

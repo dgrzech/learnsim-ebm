@@ -446,9 +446,8 @@ class UNet(nn.Module):
 
         encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
         # sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm)
-
         activation_fn_sim = lambda x: F.leaky_relu(x, negative_slope=0.2)
-        sim = CNN_SSD(no_features=[4, 8, 8], activation_fn=activation_fn_sim)
+        sim = CNN_SSD(no_features=[8, 16, 16], activation_fn=activation_fn_sim)
 
         self.submodules = nn.ModuleDict({'enc': encoder, 'dec': decoder, 'sim': sim})
 
