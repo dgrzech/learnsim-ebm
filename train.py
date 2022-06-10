@@ -343,7 +343,7 @@ def train(args):
                         seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
 
                         input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
-
+    
                         data_term = loss_init(input_warped, fixed['mask'])
                         reg_term = model.regularizer()
                         loss_val_registration += data_term + reg_weight * reg_term
@@ -352,7 +352,7 @@ def train(args):
                         non_diffeomorphic_voxels[idx] = calc_no_non_diffeomorphic_voxels(model.get_T2())
                         non_diffeomorphic_voxels_pct[idx] = non_diffeomorphic_voxels[idx] / np.prod(fixed['im'].shape)
 
-                        if not args.baseline:
+                        if not args.baseline and args.pretrain_sim:
                             cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
                             inputs = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod]
 
@@ -381,7 +381,7 @@ def train(args):
                     non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
                     non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
 
-                    writer.add_scalar('pretrain/val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
+                    writer.add_scalar('pretrain/val/metric_dsc_avg', dsc_mean.mean().item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain/val/non_diffeomorphic_voxels', non_diffeomorphic_voxels_mean.item(), GLOBAL_STEP)
                     writer.add_scalar('pretrain/val/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct_mean.item(), GLOBAL_STEP)
                     wandb_data = {'pretrain_val': {'loss_registration': loss_val_registration.item(),
@@ -394,7 +394,7 @@ def train(args):
                         wandb_data['pretrain_val'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
 
                     if not args.baseline:
-                        writer.add_scalar('pretrain/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
+                        writer.add_scalar('pretrain/val/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
                         wandb_data['pretrain_val']['loss_similarity'] = loss_val_similarity.item()
 
                     wandb.log(wandb_data)
@@ -545,11 +545,13 @@ def train(args):
                 non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
                 non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
 
-                writer.add_scalar('val/metric_dsc_avg', torch.mean(dsc_mean).item(), GLOBAL_STEP)
+                writer.add_scalar('val/metric_dsc_avg', dsc_mean.mean().item(), GLOBAL_STEP)
                 writer.add_scalar('val/non_diffeomorphic_voxels', non_diffeomorphic_voxels_mean.item(), GLOBAL_STEP)
                 writer.add_scalar('val/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct_mean.item(), GLOBAL_STEP)
+                
+                scheduler_sim.step(dsc_mean.mean())
 
-                wandb_data = {'validation': {'metric_dsc_avg': torch.mean(dsc_mean).item(),
+                wandb_data = {'validation': {'metric_dsc_avg': dsc_mean.mean().item(),
                                              'non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
                                              'non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct_mean.item()}}
 
