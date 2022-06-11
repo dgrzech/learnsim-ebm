@@ -12,8 +12,8 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-from utils import CNN_SSD, LCC, Learn2RegDataLoader, MI, OasisDataset, SGLD, SSD, UNet,\
-    calc_DSC, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, save_model, write_hparams, write_json
+from utils import LCC, MI, SSD, UNet, Learn2RegDataLoader, OasisDataset, SGLD,\
+    calc_dsc, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, save_model, to_device, write_hparams, write_json
 
 
 DEVICE = torch.device('cuda:0')
@@ -42,7 +42,8 @@ def set_up_model_and_preprocessing(args):
         raise NotImplementedError(f'Loss {args.loss} not supported')
 
     # model
-    model = UNet(config['dims'], activation_fn_sim=config['activation_fn_sim'], enable_spectral_norm=config['spectral_norm']).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
+    model = UNet(config['dims'], activation_fn_sim=config['activation_fn_sim'], enable_spectral_norm=config['spectral_norm'],
+                 old=config['old'], use_strided_conv=config['use_strided_conv']).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
     no_params_sim, no_params_enc, no_params_dec = model.no_params
     print(f'NO. PARAMETERS OF THE SIMILARITY METRIC: {no_params_sim}, ENCODER: {no_params_enc}, DECODER: {no_params_dec}')
 
@@ -53,8 +54,8 @@ def set_up_model_and_preprocessing(args):
     optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
 
     # lr schedulers
-    scheduler_sim_pretrain = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretrain, config['sim_step_size_pretrain'], config['sim_gamma_pretrain'])
-    scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim, config['sim_step_size'], config['sim_gamma'])
+    scheduler_sim_pretrain = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim_pretrain, factor=config['sim_pretrain_schedule_factor'], patience=config['sim_pretrain_schedule_patience'])
+    scheduler_sim = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim, factor=config['sim_schedule_factor'], patience=config['sim_schedule_patience'])
 
     # resuming training
     if args.pretrained_stn is not None:
@@ -144,7 +145,7 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, 
         writer.add_images('train/sample_plus/coronal', sample_plus[:, :, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
         writer.add_images('train/sample_plus/axial', sample_plus[..., sample_plus.size(4) // 2], GLOBAL_STEP)
 
-    wandb_data = {'sample_plus': utils.plot_tensor(sample_plus)}
+    wandb_data = {'train/sample_plus': utils.plot_tensor(sample_plus)}
     wandb.log(wandb_data)
     plt.close('all')
 
@@ -153,17 +154,6 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, 
 
 def train(args):
     global GLOBAL_STEP
-
-    config_dict = set_up_model_and_preprocessing(args)
-
-    config = config_dict['config']
-    loss_init, model = config_dict['loss_init'], config_dict['model']
-    enc, dec = model.submodules['enc'], model.submodules['dec']
-    sim = model.submodules['sim']
-
-    optimizer_enc, optimizer_dec = config_dict['optimizer_enc'], config_dict['optimizer_dec']
-    optimizer_sim_pretrain, optimizer_sim = config_dict['optimizer_sim_pretrain'], config_dict['optimizer_sim']
-    scheduler_sim_pretrain, scheduler_sim = config_dict['scheduler_sim_pretrain'], config_dict['scheduler_sim']
 
     # create output directories
     timestamp = datetime.now().strftime(r'%m%d_%H%M%S')
@@ -179,14 +169,24 @@ def train(args):
     os.makedirs(out_dir), os.makedirs(log_dir), os.makedirs(model_dir)
     args.out_dir, args.log_dir, args.model_dir = out_dir, log_dir, model_dir
 
-    # save the config file
+    # config
+    config_dict = set_up_model_and_preprocessing(args)
+    config = config_dict['config']
+
+    loss_init, model = config_dict['loss_init'], config_dict['model']
+    enc, dec = model.submodules['enc'], model.submodules['dec']
+    sim = model.submodules['sim']
+
+    optimizer_enc, optimizer_dec = config_dict['optimizer_enc'], config_dict['optimizer_dec']
+    optimizer_sim_pretrain, optimizer_sim = config_dict['optimizer_sim_pretrain'], config_dict['optimizer_sim']
+    scheduler_sim_pretrain, scheduler_sim = config_dict['scheduler_sim_pretrain'], config_dict['scheduler_sim']
+
     write_json(config, os.path.join(out_dir, 'config.json'))
 
     # tensorboard writer
     writer = SummaryWriter(log_dir)
-    print(separator)
-
     write_hparams(writer, config)
+    print(separator)
 
     config_dict['args'] = vars(args)
     wandb.init(project='learsim-ebm', config=config_dict, entity=args.wandb_entity)
@@ -207,7 +207,7 @@ def train(args):
     grid = init_grid_im(config['dims'], spacing=3).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
     grid = torch.cat(batch_size * [grid])
 
-    reg_weight = config['reg_weight']
+    alpha, reg_weight = config['alpha'], config['reg_weight']
 
     """
     PRE-TRAINING
@@ -218,15 +218,12 @@ def train(args):
     if args.pretrained_stn is None or args.pretrain_sim:
         for epoch in trange(start_epoch, end_epoch + 1, desc='MODEL PRE-TRAINING'):
             for fixed, moving in tqdm(dataloader_train, desc=f'Epoch {epoch}', unit='batch', leave=False):
-                for key in fixed:
-                    fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
-                    moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
-
+                fixed, moving = to_device(DEVICE, fixed, moving)
                 input = torch.cat((moving['im'], fixed['im']), dim=1)
-                wandb_data = dict({'pretrain': {}})
+                log_dict, wandb_data = {}, {'pretrain': {}}
 
+                # REGISTRATION NETWORK
                 if args.pretrained_stn is None:
-                    # REGISTRATION NETWORK
                     enc.train(), enc.enable_grads()
                     dec.train(), dec.enable_grads()
                     sim.eval(), sim.disable_grads()
@@ -248,32 +245,28 @@ def train(args):
                     if GLOBAL_STEP % config['log_period'] == 0:
                         with torch.no_grad():
                             data_term, reg_term, loss_registration = data_term.mean(), reg_term.mean(), loss_registration.mean()
-                            grid_warped = model.warp_image(grid)
-
                             non_diffeomorphic_voxels = calc_no_non_diffeomorphic_voxels(model.get_T2())
                             non_diffeomorphic_voxels_pct = non_diffeomorphic_voxels / np.prod(fixed['im'].shape)
 
-                            writer.add_scalar('pretrain/train/loss_data', data_term.item(), GLOBAL_STEP)
-                            writer.add_scalar('pretrain/train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
-                            writer.add_scalar('pretrain/train/loss_registration', loss_registration.item(), GLOBAL_STEP)
-                            writer.add_scalar('pretrain/train/non_diffeomorphic_voxels', non_diffeomorphic_voxels.item(), GLOBAL_STEP)
-                            writer.add_scalar('pretrain/train/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct.item(), GLOBAL_STEP)
+                            log_dict.update({'pretrain/train/loss_data': data_term.item(),
+                                             'pretrain/train/loss_regularisation': reg_weight * reg_term.item(),
+                                             'pretrain/train/loss_registration': loss_registration.item(),
+                                             'pretrain/train/non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
+                                             'pretrain/train/non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item()})
 
+                            grid_warped = model.warp_image(grid)
                             fixed_masked = fixed['im'] * fixed['mask']
                             moving_masked = moving['im'] * moving['mask']
 
                             log_images(writer, GLOBAL_STEP, fixed, moving, fixed_masked, moving_masked, moving_warped, grid_warped, 'pretrain')
-                            wandb_data['pretrain'].update({'loss_data': data_term.item(),
-                                                            'loss_regularisation': reg_weight * reg_term.item(),
-                                                            'loss_registration': loss_registration.item(),
-                                                            'non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
-                                                            'non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item(),
-                                                            'fixed': utils.plot_tensor(fixed['im']),
-                                                            'moving': utils.plot_tensor(moving['im']),
-                                                            'moving_warped': utils.plot_tensor(moving_warped),
-                                                            'transformation': utils.plot_tensor(grid_warped, grid=True),
-                                                            'fixed_masked': utils.plot_tensor(fixed_masked),
-                                                            'moving_masked': utils.plot_tensor(moving_masked)})
+
+                            wandb_data['pretrain'].update(log_dict)
+                            wandb_data['pretrain'].update({'fixed': utils.plot_tensor(fixed['im']),
+                                                           'moving': utils.plot_tensor(moving['im']),
+                                                           'moving_warped': utils.plot_tensor(moving_warped),
+                                                           'transformation': utils.plot_tensor(grid_warped, grid=True),
+                                                           'fixed_masked': utils.plot_tensor(fixed_masked),
+                                                           'moving_masked': utils.plot_tensor(moving_masked)})
 
                 # SIMILARITY METRIC
                 if not args.baseline and args.pretrain_sim:
@@ -294,11 +287,7 @@ def train(args):
                     no_samples = len(inputs) + len(inputs_rand)
                     loss_similarity = 0.0
 
-                    for input in inputs:
-                        data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
-                        loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
-
-                    for input in inputs_rand:
+                    for input in inputs + inputs_rand:
                         data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
                         loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
 
@@ -309,17 +298,10 @@ def train(args):
                     # tensorboard
                     if GLOBAL_STEP % config['log_period'] == 0:
                         with torch.no_grad():
-                            writer.add_scalar('pretrain/train/loss_similarity', loss_similarity.item(), GLOBAL_STEP)
-                            wandb_data['pretrain']['loss_similarity'] = loss_similarity.item()
-
-                if GLOBAL_STEP % config['log_period'] == 0:
-                    wandb.log(wandb_data)
-                    plt.close('all')
+                            log_dict['pretrain/train/loss_similarity'] = loss_similarity.item()
+                            wandb_data['pretrain'].update(log_dict)
 
                 GLOBAL_STEP += 1
-
-            if not args.baseline and args.pretrain_sim:
-                scheduler_sim_pretrain.step()
 
             # VALIDATION
             if epoch == start_epoch or epoch % config['val_period'] == 0:
@@ -334,21 +316,19 @@ def train(args):
                     loss_val_registration, loss_val_similarity = 0.0, 0.0
 
                     for idx, (fixed, moving) in enumerate(dataloader_val):
-                        for key in fixed:
-                            fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
-                            moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
-
+                        fixed, moving = to_device(DEVICE, fixed, moving)
                         input = torch.cat((moving['im'], fixed['im']), dim=1)
+
                         moving_warped = model(input)
                         seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
 
                         input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
-    
+
                         data_term = loss_init(input_warped, fixed['mask'])
                         reg_term = model.regularizer()
                         loss_val_registration += data_term + reg_weight * reg_term
 
-                        dsc[idx, :] = calc_DSC(fixed['seg'], seg_moving_warped, structures_dict)
+                        dsc[idx, :] = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)
                         non_diffeomorphic_voxels[idx] = calc_no_non_diffeomorphic_voxels(model.get_T2())
                         non_diffeomorphic_voxels_pct[idx] = non_diffeomorphic_voxels[idx] / np.prod(fixed['im'].shape)
 
@@ -362,44 +342,40 @@ def train(args):
 
                             no_samples = len(cartesian_prod) + len(cartesian_prod_rand)
 
-                            for input in inputs:
-                                data_term = loss_init(input, torch.ones_like(fixed['mask']))
-                                data_term_pred = sim(input).sum()
-
+                            for input in inputs + inputs_rand:
+                                data_term, data_term_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
                                 loss_val_similarity += F.l1_loss(data_term_pred, data_term) / no_samples
+                    
+                    # tensorboard            
+                    if GLOBAL_STEP % config['log_period'] == 0:
+                        with torch.no_grad():
+                            dsc_mean = torch.mean(dsc, dim=0)
+                            non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
+                            non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
+                            
+                            log_dict.update({'pretrain/val/loss_data': data_term.item(),
+                                             'pretrain/val/loss_regularisation': reg_weight * reg_term.item(),
+                                             'pretrain/val/loss_registration': loss_val_registration.item() / len(dataloader_val),
+                                             'pretrain/val/non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
+                                             'pretrain/val/non_diffeomorphic_voxels_pct_mean': non_diffeomorphic_voxels_pct_mean.item(),
+                                             'pretrain/val/metric_dsc_avg': dsc_mean.mean().item()})
 
-                            for input in inputs_rand:
-                                data_term = loss_init(input, torch.ones_like(fixed['mask']))
-                                data_term_pred = sim(input).sum()
+                            for structure_idx, structure_name in enumerate(structures_dict):
+                                log_dict[f'pretrain/val/metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
 
-                                loss_val_similarity += F.l1_loss(data_term_pred, data_term) / no_samples
+                            if not args.baseline and args.pretrain_sim:
+                                log_dict['pretrain/val/loss_similarity'] =  loss_val_similarity.item() / len(dataloader_val)
 
-                    # tensorboard
-                    writer.add_scalar('pretrain/val/loss_registration', loss_val_registration.item() / len(dataloader_val), GLOBAL_STEP)
-
-                    dsc_mean = torch.mean(dsc, dim=0)
-                    non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
-                    non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
-
-                    writer.add_scalar('pretrain/val/metric_dsc_avg', dsc_mean.mean().item(), GLOBAL_STEP)
-                    writer.add_scalar('pretrain/val/non_diffeomorphic_voxels', non_diffeomorphic_voxels_mean.item(), GLOBAL_STEP)
-                    writer.add_scalar('pretrain/val/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct_mean.item(), GLOBAL_STEP)
-                    wandb_data = {'pretrain_val': {'loss_registration': loss_val_registration.item(),
-                                                   'metric_dsc_avg': torch.mean(dsc_mean).item(),
-                                                   'non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
-                                                   'non_diffeomorphic_voxels_pct_mean': non_diffeomorphic_voxels_pct_mean.item()}}
-
-                    for structure_idx, structure_name in enumerate(structures_dict):
-                        writer.add_scalar(f'pretrain/val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
-                        wandb_data['pretrain_val'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
-
-                    if not args.baseline:
-                        writer.add_scalar('pretrain/val/loss_similarity', loss_val_similarity.item() / len(dataloader_val), GLOBAL_STEP)
-                        wandb_data['pretrain_val']['loss_similarity'] = loss_val_similarity.item()
+                            wandb_data['pretrain'].update(log_dict)
+                    
+            if GLOBAL_STEP % config['log_period'] == 0:
+                with torch.no_grad():
+                    for key, val in log_dict.items():
+                        writer.add_scalar(key, val, global_step=GLOBAL_STEP)
 
                     wandb.log(wandb_data)
                     plt.close('all')
-
+                    
             save_model(args, epoch, GLOBAL_STEP, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim, scheduler_sim_pretrain, scheduler_sim)
 
     if args.baseline:
@@ -409,23 +385,20 @@ def train(args):
     TRAIN THE MODEL
     """
 
-    alpha = config['alpha']  # energy regularisation weight
-
     start_epoch = end_epoch
     end_epoch = start_epoch + config['epochs'] - 1
 
     for epoch in trange(start_epoch, end_epoch + 1, desc='MODEL TRAINING'):
         for fixed, moving in tqdm(dataloader_train, desc=f'Epoch {epoch}', unit='batch', leave=False):
-            for key in fixed:
-                fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
-                moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
+            fixed, moving = to_device(DEVICE, fixed, moving)
+            input = torch.cat((moving['im'], fixed['im']), dim=1)
+            log_dict, wandb_data = {}, {'train': {}}
 
             # REGISTRATION NETWORK
             enc.train(), enc.enable_grads()
             dec.train(), dec.enable_grads()
             sim.eval(), sim.disable_grads()
 
-            input = torch.cat((moving['im'], fixed['im']), dim=1)
             moving_warped = model(input)
             input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
 
@@ -446,43 +419,41 @@ def train(args):
                     non_diffeomorphic_voxels = calc_no_non_diffeomorphic_voxels(model.get_T2())
                     non_diffeomorphic_voxels_pct = non_diffeomorphic_voxels / np.prod(fixed['im'].shape)
 
-                    writer.add_scalar('train/loss_data', data_term.item(), GLOBAL_STEP)
-                    writer.add_scalar('train/loss_regularisation', reg_weight * reg_term.item(), GLOBAL_STEP)
-                    writer.add_scalar('train/loss_registration', loss_registration.item(), GLOBAL_STEP)
-                    writer.add_scalar('train/non_diffeomorphic_voxels', non_diffeomorphic_voxels.item(), GLOBAL_STEP)
-                    writer.add_scalar('train/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct.item(), GLOBAL_STEP)
+                    dict.update({'train/train/loss_data': data_term.item(),
+                                 'train/train/loss_regularisation': reg_weight * reg_term.item(),
+                                 'train/train/loss_registration': loss_registration.item(),
+                                 'train/train/non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
+                                 'train/train/non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item()})
 
                     grid_warped = model.warp_image(grid)
-
                     fixed_masked = fixed['im'] * fixed['mask']
                     moving_masked = moving['im'] * moving['mask']
 
                     log_images(writer, GLOBAL_STEP, fixed, moving, fixed_masked, moving_masked, moving_warped, grid_warped, 'train')
 
-                    wandb_data = {'train': {'loss_data': data_term.item(),
-                                            'loss_regularisation': reg_weight * reg_term.item(),
-                                            'loss_registration': loss_registration.item(),
-                                            'non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
-                                            'non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item(),
-                                            'fixed': utils.plot_tensor(fixed['im']),
-                                            'moving': utils.plot_tensor(moving['im']),
-                                            'moving_warped': utils.plot_tensor(moving_warped),
-                                            'transformation': utils.plot_tensor(grid_warped, grid=True),
-                                            'fixed_masked': utils.plot_tensor(fixed_masked),
-                                            'moving_masked': utils.plot_tensor(moving_masked)}}
+                    wandb_data['train'].update(log_dict)
+                    wandb_data['train'].update({'fixed': utils.plot_tensor(fixed['im']),
+                                                'moving': utils.plot_tensor(moving['im']),
+                                                'moving_warped': utils.plot_tensor(moving_warped),
+                                                'transformation': utils.plot_tensor(grid_warped, grid=True),
+                                                'fixed_masked': utils.plot_tensor(fixed_masked),
+                                                'moving_masked': utils.plot_tensor(moving_masked)})
+
+            GLOBAL_STEP += 1
+
+            if GLOBAL_STEP % config['log_period'] == 0:
+                with torch.no_grad():
+                    for key, val in log_dict.items():
+                        writer.add_scalar(key, val, global_step=GLOBAL_STEP)
 
                     wandb.log(wandb_data)
                     plt.close('all')
-
-            GLOBAL_STEP += 1
 
         # SIMILARITY METRIC
         enc.eval(), enc.disable_grads()
         dec.eval(), dec.disable_grads()
 
-        with torch.no_grad():
-            moving_warped = model(input)
-
+        moving_warped = model(input)
         sample_plus = generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, writer)
 
         sim.train(), sim.enable_grads()
@@ -508,62 +479,59 @@ def train(args):
         loss_sim.backward()
         optimizer_sim.step()
 
-        scheduler_sim.step()
+        GLOBAL_STEP += 1
 
         # tensorboard
         if GLOBAL_STEP % config['log_period'] == 0:
             with torch.no_grad():
-                writer.add_scalar('train/loss_similarity', loss_sim.item(), GLOBAL_STEP)
-                wandb_data = {'train': {'loss_similarity': loss_sim.item()}}
-
-                wandb.log(wandb_data)
-                plt.close('all')
-
-        GLOBAL_STEP += 1
+                log_dict['train/train/loss_similarity'] = loss_sim.item()
+                wandb_data['train'].update(log_dict)
 
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
+            enc.eval(), enc.disable_grads()
+            dec.eval(), dec.disable_grads()
+            sim.eval(), sim.disable_grads()
+
             with torch.no_grad():
                 dsc = torch.zeros(len(dataloader_val), len(structures_dict))
                 non_diffeomorphic_voxels, non_diffeomorphic_voxels_pct = torch.zeros(len(dataloader_val)), torch.zeros(len(dataloader_val))
 
                 for idx, (fixed, moving) in enumerate(dataloader_val):
-                    for key in fixed:
-                        fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
-                        moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
-
+                    fixed, moving = to_device(DEVICE, fixed, moving)
                     input = torch.cat((moving['im'], fixed['im']), dim=1)
-                    model(input)
+
+                    noving_warped = model(input)
                     seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
 
-                    dsc[idx, :] = calc_DSC(fixed['seg'], seg_moving_warped, structures_dict)
+                    dsc[idx, :] = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)
                     non_diffeomorphic_voxels[idx] = calc_no_non_diffeomorphic_voxels(model.get_T2())
                     non_diffeomorphic_voxels_pct[idx] = non_diffeomorphic_voxels[idx] / np.prod(fixed['im'].shape)
 
-                # tensorboard
                 dsc_mean = torch.mean(dsc, dim=0)
                 non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
                 non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
 
-                writer.add_scalar('val/metric_dsc_avg', dsc_mean.mean().item(), GLOBAL_STEP)
-                writer.add_scalar('val/non_diffeomorphic_voxels', non_diffeomorphic_voxels_mean.item(), GLOBAL_STEP)
-                writer.add_scalar('val/non_diffeomorphic_voxels_pct', non_diffeomorphic_voxels_pct_mean.item(), GLOBAL_STEP)
-                
                 scheduler_sim.step(dsc_mean.mean())
 
-                wandb_data = {'validation': {'metric_dsc_avg': dsc_mean.mean().item(),
-                                             'non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
-                                             'non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct_mean.item()}}
+                log_dict.update({'train/val/metric_dsc_avg': dsc_mean.mean().item(),
+                                 'train/val/non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
+                                 'train/val/non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct_mean.item()})
 
                 for structure_idx, structure_name in enumerate(structures_dict):
-                    writer.add_scalar(f'val/metric_dsc_{structure_name}', dsc_mean[structure_idx].item(), GLOBAL_STEP)
-                    wandb_data['validation'][f'metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
+                    log_dict[f'train/val/metric_dsc_{structure_name}'] = dsc_mean[structure_idx].item()
+
+                wandb_data['train'].update(log_dict)
+
+        if GLOBAL_STEP % config['log_period'] == 0:
+            with torch.no_grad():
+                for key, val in log_dict.items():
+                    writer.add_scalar(key, val, global_step=GLOBAL_STEP)
 
                 wandb.log(wandb_data)
                 plt.close('all')
 
-        save_model(args, epoch, GLOBAL_STEP, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim,
-                   scheduler_sim_pretrain, scheduler_sim)
+        save_model(args, epoch, GLOBAL_STEP, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim, scheduler_sim_pretrain, scheduler_sim)
 
 
 if __name__ == '__main__':

@@ -54,6 +54,33 @@ def get_noise_Langevin(sigma, tau):
     return math.sqrt(2.0 * tau) * sigma * eps
 
 
+
+@torch.no_grad()
+def calc_dsc(seg_fixed, seg_moving, structures_dict):
+    batch_size = seg_fixed.size(0)
+    dsc = torch.zeros(batch_size, len(structures_dict), device=seg_fixed.device)
+
+    for idx, im_pair in enumerate(range(batch_size)):
+        seg_fixed_im_pair = seg_fixed[idx]
+        seg_moving_im_pair = seg_moving[idx]
+
+        for structure_idx, structure in enumerate(structures_dict):
+            label = structures_dict[structure]
+
+            numerator = 2.0 * ((seg_fixed_im_pair == label) * (seg_moving_im_pair == label)).sum()
+            denominator = (seg_fixed_im_pair == label).sum() + (seg_moving_im_pair == label).sum()
+
+            try:
+                score = numerator / denominator
+            except:
+                score = 0.0
+
+            dsc[idx, structure_idx] = score
+
+    return dsc
+
+
+@torch.no_grad()
 def calc_det_J(nabla):
     """
     calculate the Jacobian determinant of a vector field
@@ -80,35 +107,11 @@ def calc_det_J(nabla):
     return det_J
 
 
+@torch.no_grad()
 def calc_no_non_diffeomorphic_voxels(transformation, diff_op=GradientOperator()):
     nabla = diff_op(transformation)
     log_det_J_transformation = torch.log(calc_det_J(nabla))
     return torch.sum(torch.isnan(log_det_J_transformation), dim=(1, 2, 3))
-
-
-@torch.no_grad()
-def calc_DSC(seg_fixed, seg_moving, structures_dict):
-    batch_size = seg_fixed.size(0)
-    DSC = torch.zeros(batch_size, len(structures_dict), device=seg_fixed.device)
-
-    for idx, im_pair in enumerate(range(batch_size)):
-        seg_fixed_im_pair = seg_fixed[idx]
-        seg_moving_im_pair = seg_moving[idx]
-
-        for structure_idx, structure in enumerate(structures_dict):
-            label = structures_dict[structure]
-
-            numerator = 2.0 * ((seg_fixed_im_pair == label) * (seg_moving_im_pair == label)).sum()
-            denominator = (seg_fixed_im_pair == label).sum() + (seg_moving_im_pair == label).sum()
-
-            try:
-                score = numerator / denominator
-            except:
-                score = 0.0
-
-            DSC[idx, structure_idx] = score
-
-    return DSC
 
 
 class SGLD(torch.autograd.Function):
@@ -176,15 +179,12 @@ def init_grid_im(size, spacing=2):
     raise NotImplementedError
 
 
-def save_model(args, epoch, step, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim,
-               scheduler_sim_pretrain, scheduler_sim):
-    path = os.path.join(args.model_dir, f'checkpoint_{epoch}.pt')
-    state_dict = {'epoch': epoch, 'step': step, 'model': model.state_dict(),
-                  'optimizer_enc': optimizer_enc.state_dict(), 'optimizer_dec': optimizer_dec.state_dict(),
-                  'optimizer_sim_pretrain': optimizer_sim_pretrain.state_dict(), 'optimizer_sim': optimizer_sim.state_dict(),
-                  'scheduler_sim_pretrain': scheduler_sim_pretrain.state_dict(), 'scheduler_sim': scheduler_sim.state_dict()}
+def to_device(DEVICE, fixed, moving):
+    for key in fixed:
+        fixed[key] = fixed[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
+        moving[key] = moving[key].to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
 
-    torch.save(state_dict, path)
+    return fixed, moving
 
 
 def log_images(writer, step, fixed, moving, fixed_masked, moving_masked, moving_warped, grid_warped, phase=''):
@@ -224,9 +224,19 @@ def plot_tensor(tensor: torch.Tensor, grid=False):
     return fig
 
 
+def save_model(args, epoch, step, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim, scheduler_sim_pretrain, scheduler_sim):
+    path = os.path.join(args.model_dir, f'checkpoint_{epoch}.pt')
+    state_dict = {'epoch': epoch, 'step': step, 'model': model.state_dict(),
+                  'optimizer_enc': optimizer_enc.state_dict(), 'optimizer_dec': optimizer_dec.state_dict(),
+                  'optimizer_sim_pretrain': optimizer_sim_pretrain.state_dict(), 'optimizer_sim': optimizer_sim.state_dict(),
+                  'scheduler_sim_pretrain': scheduler_sim_pretrain.state_dict(), 'scheduler_sim': scheduler_sim.state_dict()}
+
+    torch.save(state_dict, path)
+
+
 def write_hparams(writer, config):
     hparams = ['epochs_pretrain_model', 'loss_init', 'alpha', 'reg_weight', 'lr', 'lr_sim_pretrain', 'lr_sim',
-               'sim_gamma_pretrain', 'sim_step_size_pretrain', 'sim_gamma', 'sim_step_size', 'tau',
+               'sim_pretrain_schedule_factor', 'sim_pretrain_schedule_patience', 'sim_schedule_factor', 'sim_schedule_patience', 'tau',
                'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'dims']
     hparam_dict = dict(zip(hparams, [config[hparam] for hparam in hparams]))
 

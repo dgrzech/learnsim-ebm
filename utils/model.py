@@ -202,9 +202,10 @@ class BaseModel(nn.Module):
         return super().__str__() + '\ntrainable parameters: {}\n'.format(no_trainable_params)
 
 
-class CNN_SSD(BaseModel):
-    def __init__(self, no_features=None, activation_fn=nn.Identity()):
-        super(CNN_SSD, self).__init__(no_features, activation_fn)
+class SimilarityMetricOld(BaseModel):
+    def __init__(self, no_features=None):
+        activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        super(SimilarityMetricOld, self).__init__(no_features, activation_fn)
 
     def encode(self, im_fixed, im_moving):
         return (im_fixed - im_moving) ** 2
@@ -221,7 +222,7 @@ class Model(ABC):
 
     
 class SimilarityMetric(nn.Module, Model):
-    def __init__(self, activation_fn="tanh", enable_spectral_norm=True, use_bias=True):
+    def __init__(self, activation_fn="tanh", enable_spectral_norm=True, use_bias=True, use_strided_conv=True):
         super(SimilarityMetric, self).__init__()
 
         if activation_fn == 'tanh':
@@ -231,49 +232,31 @@ class SimilarityMetric(nn.Module, Model):
         elif activation_fn == 'none':
             self.activation_fn = lambda x: x
 
-        if enable_spectral_norm:
-            self.conv1 = spectral_norm(nn.Conv3d(1, 16, kernel_size=3, padding=1, bias=use_bias))
-            self.conv2 = spectral_norm(nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias))
-            self.conv3 = spectral_norm(nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias))
-            self.conv4 = spectral_norm(nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias))
-            self.conv5 = spectral_norm(nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias))
-            self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv6 = spectral_norm(nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias))
-        else:
-            self.conv1 = nn.Conv3d(1, 16, kernel_size=3, padding=1, bias=use_bias)
-            self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
-            self.conv3 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
-            self.conv4 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias)
-            self.conv5 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias)
-            self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv6 = nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias)
+        f = lambda x: spectral_norm(x) if enable_spectral_norm else x
+        self.stride = 2 if use_strided_conv else 1
 
-        self.agg = nn.Conv1d(8, 1, kernel_size=1, stride=1, bias=False)
+        self.conv1 = f(nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias))
+        self.conv2 = f(nn.Conv3d(8, 8, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
+        self.conv3 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
+        self.conv4 = f(nn.Conv3d(16, 16, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
+        self.conv5 = f(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
+        self.conv6 = f(nn.Conv3d(32, 32, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
 
-    def _forward(self, im):
-        y1 = self.activation_fn(self.conv1(im))
+    def _forward(self, input):
+        y1 = self.activation_fn(self.conv1(input))
         y2 = self.activation_fn(self.conv2(y1))
         y3 = self.activation_fn(self.conv3(y2))
         y4 = self.activation_fn(self.conv4(y3))
         y5 = self.activation_fn(self.conv5(y4))
-        y5 = self.up1(y5)
         y6 = self.activation_fn(self.conv6(y5))
 
-        N, C, D, H, W = y6.shape
-        y7 = self.agg(y6.view(N, C, -1)).view(N, 1, D, H, W)
-
-        return y7
+        return y6
 
     def forward(self, input, mask=None, reduction='mean'):
-        im_fixed = input[:, 1:2]
-        im_moving_warped = input[:, 0:1]
+        z = self._forward(input) ** 2
 
-        z_fixed = self._forward(im_fixed)
-        z_moving_warped = self._forward(im_moving_warped)
-
-        z = (z_fixed - z_moving_warped) ** 2
-        
-        if mask is not None:
+        if mask is not None and self.stride == 1:
+            mask = mask.expand_as(z)
             z = z[mask]
 
         if reduction == 'mean':
@@ -441,13 +424,15 @@ class Decoder(nn.Module, Model):
 
 
 class UNet(nn.Module):
-    def __init__(self, input_size, activation_fn_sim='tanh', cps=None, enable_spectral_norm=False):
+    def __init__(self, input_size, activation_fn_sim='tanh', cps=None, enable_spectral_norm=False, old=False, use_strided_conv=True):
         super(UNet, self).__init__()
 
         encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
-        # sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm)
-        activation_fn_sim = lambda x: F.leaky_relu(x, negative_slope=0.2)
-        sim = CNN_SSD(no_features=[8, 16, 16], activation_fn=activation_fn_sim)
+
+        if old:
+            sim = SimilarityMetricOld(no_features=[8, 16, 16])
+        else:
+            sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm, use_strided_conv=use_strided_conv)
 
         self.submodules = nn.ModuleDict({'enc': encoder, 'dec': decoder, 'sim': sim})
 
