@@ -130,15 +130,12 @@ class BaseModel(nn.Module):
     base class for all models
     """
 
-    def __init__(self, no_features=None, activation_fn=nn.Identity()):
+    def __init__(self, no_features=None):
         super(BaseModel, self).__init__()
+        
+        activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+
         self.no_features = no_features
-
-        try:
-            activation_fn = getattr(nn, activation_fn['type'])(**activation_fn['args'])
-        except:
-            pass
-
         self.enc = UNetEncoder(no_features, activation_fn=activation_fn)
         self.agg = nn.Conv1d(no_features[-1], 1, kernel_size=1, stride=1, bias=False)
 
@@ -204,8 +201,7 @@ class BaseModel(nn.Module):
 
 class SimilarityMetricOld(BaseModel):
     def __init__(self, no_features=None):
-        activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
-        super(SimilarityMetricOld, self).__init__(no_features, activation_fn)
+        super(SimilarityMetricOld, self).__init__(no_features)
 
     def encode(self, im_fixed, im_moving):
         return (im_fixed - im_moving) ** 2
