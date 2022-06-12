@@ -161,8 +161,6 @@ def train(args):
     out_dir = os.path.join(args.out, timestamp)
     log_dir, model_dir = os.path.join(out_dir, 'log'), os.path.join(out_dir, 'checkpoints')
 
-    if args.baseline:
-        log_dir = f'{log_dir}_baseline'
     if args.exp_name is not None:
         log_dir = f'{log_dir}_{args.exp_name}'
 
