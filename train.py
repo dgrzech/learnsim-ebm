@@ -341,8 +341,8 @@ def train(args):
                             no_samples = len(cartesian_prod) + len(cartesian_prod_rand)
 
                             for input in inputs + inputs_rand:
-                                data_term, data_term_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
-                                loss_val_similarity += F.l1_loss(data_term_pred, data_term) / no_samples
+                                data_term_init, data_term_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
+                                loss_val_similarity += F.l1_loss(data_term_init, data_term_pred) / no_samples
                     
                     # tensorboard            
                     if GLOBAL_STEP % config['log_period'] == 0:
