@@ -235,8 +235,8 @@ def save_model(args, epoch, step, model, optimizer_enc, optimizer_dec, optimizer
 
 
 def write_hparams(writer, config):
-    hparams = ['epochs_pretrain_model', 'loss_init', 'alpha', 'reg_weight', 'lr', 'lr_sim_pretrain', 'lr_sim',
-               'sim_pretrain_schedule_factor', 'sim_pretrain_schedule_patience', 'sim_schedule_factor', 'sim_schedule_patience', 'tau',
+    hparams = ['epochs_pretrain_model', 'loss_init', 'alpha', 'reg_weight', 'lr', 'lr_sim_pretrain', 'lr_sim', 'tau',
+               # 'sim_pretrain_schedule_factor', 'sim_pretrain_schedule_patience', 'sim_schedule_factor', 'sim_schedule_patience',
                'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'dims']
     hparam_dict = dict(zip(hparams, [config[hparam] for hparam in hparams]))
 

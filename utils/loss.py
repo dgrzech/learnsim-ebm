@@ -24,7 +24,7 @@ class LCC(nn.Module):
         var_M = self.kernel((im_moving - u_M) ** 2)
 
         z = cross * cross / (var_F * var_M + 1e-5)
-        return -1.0 * z.mean(dim=(1, 2, 3, 4))
+        return -1.0 * z.mean()
 
 
 class MI(nn.Module):

@@ -231,12 +231,22 @@ class SimilarityMetric(nn.Module, Model):
         f = lambda x: spectral_norm(x) if enable_spectral_norm else x
         self.stride = 2 if use_strided_conv else 1
 
-        self.conv1 = f(nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias))
-        self.conv2 = f(nn.Conv3d(8, 8, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
-        self.conv3 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
-        self.conv4 = f(nn.Conv3d(16, 16, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
-        self.conv5 = f(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
-        self.conv6 = f(nn.Conv3d(32, 32, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
+        # self.conv1 = f(nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias))
+        # self.conv2 = f(nn.Conv3d(8, 8, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
+        # self.conv3 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
+        # self.conv4 = f(nn.Conv3d(16, 16, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
+        # self.conv5 = f(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
+        # self.conv6 = f(nn.Conv3d(32, 32, kernel_size=3, stride=self.stride, padding=1, bias=use_bias))
+
+        self.conv1 = f(nn.Conv3d(1, 16, kernel_size=3, padding=1, bias=use_bias))
+        self.conv2 = f(nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias))
+        self.conv3 = f(nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias))
+        self.conv4 = f(nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias))
+        self.conv5 = f(nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias))
+        self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+        self.conv6 = f(nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias))
+
+        self.agg = nn.Conv1d(8, 1, kernel_size=1, stride=1, bias=False)
 
     def _forward(self, input):
         y1 = self.activation_fn(self.conv1(input))
@@ -244,15 +254,34 @@ class SimilarityMetric(nn.Module, Model):
         y3 = self.activation_fn(self.conv3(y2))
         y4 = self.activation_fn(self.conv4(y3))
         y5 = self.activation_fn(self.conv5(y4))
+        # y6 = self.activation_fn(self.conv6(y5))
+        
+        # return y6
+
+        y5 = self.up1(y5)
         y6 = self.activation_fn(self.conv6(y5))
 
-        return y6
+        N, C, D, H, W = y6.shape
+        y7 = self.agg(y6.view(N, C, -1)).view(N, 1, D, H, W)
+
+        return y7
 
     def forward(self, input, mask=None, reduction='mean'):
-        z = self._forward(input) ** 2
+        # z = self._forward(input) ** 2
 
-        if mask is not None and self.stride == 1:
-            mask = mask.expand_as(z)
+        # if mask is not None and self.stride == 1:
+        #     mask = mask.expand_as(z)
+        #     z = z[mask]
+
+        im_fixed = input[:, 1:2]
+        im_moving_warped = input[:, 0:1]
+
+        z_fixed = self._forward(im_fixed)
+        z_moving_warped = self._forward(im_moving_warped)
+
+        z = (z_fixed - z_moving_warped) ** 2
+
+        if mask is not None:
             z = z[mask]
 
         if reduction == 'mean':

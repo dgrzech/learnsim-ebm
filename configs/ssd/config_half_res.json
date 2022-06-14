@@ -23,7 +23,7 @@
 	"no_samples_SGLD": 2500,
 	"no_workers": 5,
 	"dims": [80, 96, 112],
-	"log_period": 50,
+	"log_period": 1,
 	"val_period": 1,
 	"data_path": "",
 	"im_pairs_train": "",

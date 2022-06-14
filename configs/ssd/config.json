@@ -23,7 +23,7 @@
 	"no_samples_SGLD": 2000,
 	"no_workers": 5,
 	"dims": [160, 192, 224],
-	"log_period": 50,
+	"log_period": 1,
 	"val_period": 1,
 	"im_pairs_train": "",
 	"im_pairs_val": "/vol/biodata/data/learn2reg/2021/task03/pairs_val.csv"

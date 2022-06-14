@@ -54,8 +54,10 @@ def set_up_model_and_preprocessing(args):
     optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
 
     # lr schedulers
-    scheduler_sim_pretrain = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim_pretrain, factor=config['sim_pretrain_schedule_factor'], patience=config['sim_pretrain_schedule_patience'])
-    scheduler_sim = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim, factor=config['sim_schedule_factor'], patience=config['sim_schedule_patience'])
+    # scheduler_sim_pretrain = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim_pretrain, factor=config['sim_pretrain_schedule_factor'], patience=config['sim_pretrain_schedule_patience'])
+    # scheduler_sim = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim, factor=config['sim_schedule_factor'], patience=config['sim_schedule_patience'])
+    scheduler_sim_pretrain = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretrain, config['sim_step_size_pretrain'], config['sim_gamma_pretrain'])
+    scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim, config['sim_step_size'], config['sim_gamma'])
 
     # resuming training
     if args.pretrained_stn is not None:
@@ -301,6 +303,9 @@ def train(args):
 
                 GLOBAL_STEP += 1
 
+            if not args.baseline and args.pretrain_sim:
+                scheduler_sim_pretrain.step()
+
             # VALIDATION
             if epoch == start_epoch or epoch % config['val_period'] == 0:
                 enc.eval(), enc.disable_grads()
@@ -477,6 +482,8 @@ def train(args):
         loss_sim.backward()
         optimizer_sim.step()
 
+        scheduler_sim.step()
+
         GLOBAL_STEP += 1
 
         # tensorboard
@@ -510,7 +517,7 @@ def train(args):
                 non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
                 non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
 
-                scheduler_sim.step(dsc_mean.mean())
+                # scheduler_sim.step(dsc_mean.mean())
 
                 log_dict.update({'train/val/metric_dsc_avg': dsc_mean.mean().item(),
                                  'train/val/non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
