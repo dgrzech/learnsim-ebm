@@ -412,6 +412,9 @@ class Decoder(nn.Module, Model):
         d = torch.mean(dx) + torch.mean(dy) + torch.mean(dz)
         return d / 3.0
 
+    def enable_grads_T(self):
+        self.T.requires_grad_(True)
+
     def warp_image(self, img, interpolation='bilinear', padding='border'):
         wrp = transform(img, self.T, interpolation=interpolation, padding=padding)
         return wrp

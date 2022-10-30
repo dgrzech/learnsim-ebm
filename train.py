@@ -54,10 +54,10 @@ def set_up_model_and_preprocessing(args):
     optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
 
     # lr schedulers
-    # scheduler_sim_pretrain = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim_pretrain, factor=config['sim_pretrain_schedule_factor'], patience=config['sim_pretrain_schedule_patience'])
-    # scheduler_sim = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim, factor=config['sim_schedule_factor'], patience=config['sim_schedule_patience'])
-    scheduler_sim_pretrain = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretrain, config['sim_step_size_pretrain'], config['sim_gamma_pretrain'])
-    scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim, config['sim_step_size'], config['sim_gamma'])
+    scheduler_sim_pretrain = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim_pretrain, factor=config['sim_pretrain_schedule_factor'], patience=config['sim_pretrain_schedule_patience'])
+    scheduler_sim = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim, factor=config['sim_schedule_factor'], patience=config['sim_schedule_patience'])
+    # scheduler_sim_pretrain = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretrain, config['sim_step_size_pretrain'], config['sim_gamma_pretrain'])
+    # scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim, config['sim_step_size'], config['sim_gamma'])
 
     # resuming training
     if args.pretrained_stn is not None:
@@ -273,10 +273,8 @@ def train(args):
                     enc.eval(), enc.disable_grads()
                     dec.eval(), dec.disable_grads()
                     sim.train(), sim.enable_grads()
-
+                    
                     with torch.no_grad():
-                        moving_warped = model(input)
-
                         cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
                         inputs = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod]
 
@@ -288,8 +286,19 @@ def train(args):
                     loss_similarity = 0.0
 
                     for input in inputs + inputs_rand:
-                        data_term_sim, data_term_sim_pred = loss_init(input, torch.ones_like(fixed['mask'])), sim(input).sum()
-                        loss_similarity += F.l1_loss(data_term_sim_pred, data_term_sim) / no_samples
+                        with torch.no_grad():
+                            model(input)
+
+                        dec.enable_grads_T()
+                        
+                        moving_warped = model.warp_image(input[:, 0:1])
+                        input_warped = torch.cat((moving_warped, input[:, 1:2]), dim=1)
+
+                        data_term_sim, data_term_sim_pred = loss_init(input_warped, torch.ones_like(fixed['mask'])), sim(input_warped).sum()
+
+                        data_term_sim_grad = torch.autograd.grad(data_term_sim, model.get_T(), retain_graph=True)[0]
+                        data_term_sim_pred_grad = torch.autograd.grad(data_term_sim_pred, model.get_T(), retain_graph=True)[0]
+                        loss_similarity += (F.l1_loss(data_term_sim_pred, data_term_sim) + F.mse_loss(data_term_sim_grad, data_term_sim_pred_grad)) / no_samples
 
                     optimizer_sim_pretrain.zero_grad(set_to_none=True)
                     loss_similarity.backward()
@@ -303,8 +312,8 @@ def train(args):
 
                 GLOBAL_STEP += 1
 
-            if not args.baseline and args.pretrain_sim:
-                scheduler_sim_pretrain.step()
+            # if not args.baseline and args.pretrain_sim:
+            #   scheduler_sim_pretrain.step()
 
             # VALIDATION
             if epoch == start_epoch or epoch % config['val_period'] == 0:
@@ -482,7 +491,7 @@ def train(args):
         loss_sim.backward()
         optimizer_sim.step()
 
-        scheduler_sim.step()
+        # scheduler_sim.step()
 
         GLOBAL_STEP += 1
 
