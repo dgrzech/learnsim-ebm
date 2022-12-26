@@ -275,6 +275,8 @@ def train(args):
                     sim.train(), sim.enable_grads()
                     
                     with torch.no_grad():
+                        moving_warped = model(input)
+
                         cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
                         inputs = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod]
 
@@ -284,21 +286,19 @@ def train(args):
 
                     no_samples = len(inputs) + len(inputs_rand)
                     loss_similarity = 0.0
+                    
+                    zero_disp = torch.zeros_like(dec.grid)
+                    zero_disp.requires_grad_(True)
 
                     for input in inputs + inputs_rand:
-                        with torch.no_grad():
-                            model(input)
-
-                        dec.enable_grads_T()
-                        
-                        moving_warped = model.warp_image(input[:, 0:1])
+                        moving_warped = dec.warp_image(input[:, 0:1], disp=zero_disp)
                         input_warped = torch.cat((moving_warped, input[:, 1:2]), dim=1)
 
                         data_term_sim, data_term_sim_pred = loss_init(input_warped, torch.ones_like(fixed['mask'])), sim(input_warped).sum()
 
-                        data_term_sim_grad = torch.autograd.grad(data_term_sim, model.get_T(), retain_graph=True)[0]
-                        data_term_sim_pred_grad = torch.autograd.grad(data_term_sim_pred, model.get_T(), retain_graph=True)[0]
-                        loss_similarity += (F.l1_loss(data_term_sim_pred, data_term_sim) + F.mse_loss(data_term_sim_grad, data_term_sim_pred_grad)) / no_samples
+                        data_term_sim_grad = torch.autograd.grad(data_term_sim, zero_disp, retain_graph=True)[0]
+                        data_term_sim_pred_grad = torch.autograd.grad(data_term_sim_pred, zero_disp, retain_graph=True)[0]
+                        loss_similarity += (F.mse_loss(data_term_sim_pred, data_term_sim) + F.mse_loss(data_term_sim_grad, data_term_sim_pred_grad)) / no_samples
 
                     optimizer_sim_pretrain.zero_grad(set_to_none=True)
                     loss_similarity.backward()

@@ -415,9 +415,14 @@ class Decoder(nn.Module, Model):
     def enable_grads_T(self):
         self.T.requires_grad_(True)
 
-    def warp_image(self, img, interpolation='bilinear', padding='border'):
-        wrp = transform(img, self.T, interpolation=interpolation, padding=padding)
-        return wrp
+    def warp_image(self, img, disp=None, interpolation='bilinear', padding='border'):
+        if disp is None:
+            wrp = transform(img, self.T, interpolation=interpolation, padding=padding)
+            return wrp
+
+        T = self.move_grid_dims(self.grid + disp)
+        return transform(img, T, interpolation=interpolation, padding=padding)
+       
 
     def warp_inv_image(self, img, interpolation='bilinear', padding='border'):
         wrp = transform(img, self.T_inv, interpolation=interpolation, padding=padding)
@@ -497,7 +502,7 @@ class UNet(nn.Module):
     def transform(self, src, grid, interpolation='bilinear', padding='border'):
         return self.submodules['dec'].transform(src, grid, interpolation=interpolation, padding=padding)
 
-    def warp_image(self, img, interpolation='bilinear', padding='border'):
+    def warp_image(self, img, disp=None, interpolation='bilinear', padding='border'):
         return self.submodules['dec'].warp_image(img, interpolation=interpolation, padding=padding)
 
     def warp_inv_image(self, img, interpolation='bilinear', padding='border'):
