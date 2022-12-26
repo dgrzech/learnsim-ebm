@@ -13,7 +13,7 @@ from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
 from utils import LCC, MI, SSD, UNet, Learn2RegDataLoader, OasisDataset, SGLD,\
-    calc_dsc, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, save_model, to_device, write_hparams, write_json
+    calc_dsc, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, rescale_im_intensity, save_model, to_device, write_hparams, write_json
 
 
 DEVICE = torch.device('cuda:0')
@@ -280,7 +280,7 @@ def train(args):
                         cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
                         inputs = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod]
 
-                        rand1, rand2 = torch.rand_like(fixed['im']), torch.rand_like(moving['im'])
+                        rand1, rand2 = rescale_im_intensity(torch.rand_like(fixed['im'])), rescale_im_intensity(torch.rand_like(moving['im']))
                         cartesian_prod_rand = list(itertools.product([rand1, rand2], [rand1, rand2]))
                         inputs_rand = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod_rand]
 
@@ -348,7 +348,7 @@ def train(args):
                             cartesian_prod = list(itertools.product([fixed['im'], moving['im'], moving_warped], [fixed['im'], moving['im'], moving_warped]))
                             inputs = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod]
 
-                            rand1, rand2 = torch.rand_like(fixed['im']), torch.rand_like(moving['im'])
+                            rand1, rand2 = rescale_im_intensity(torch.rand_like(fixed['im'])), rescale_im_intensity(torch.rand_like(moving['im']))
                             cartesian_prod_rand = list(itertools.product([rand1, rand2], [rand1, rand2]))
                             inputs_rand = [torch.cat((el[0], el[1]), dim=1) for el in cartesian_prod_rand]
 
