@@ -7,7 +7,7 @@
 	"reg_weight": 15000.0,
 	"activation_fn_sim": "leaky_relu",
 	"old": false,
-	"spectral_norm": true,
+	"spectral_norm": false,
 	"use_strided_conv": true,
 	"lr": 0.0002,
 	"lr_sim_pretrain": 0.0001,
