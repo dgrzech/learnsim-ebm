@@ -56,8 +56,6 @@ def set_up_model_and_preprocessing(args):
     # lr schedulers
     scheduler_sim_pretrain = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim_pretrain, factor=config['sim_pretrain_schedule_factor'], patience=config['sim_pretrain_schedule_patience'])
     scheduler_sim = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim, factor=config['sim_schedule_factor'], patience=config['sim_schedule_patience'])
-    # scheduler_sim_pretrain = torch.optim.lr_scheduler.StepLR(optimizer_sim_pretrain, config['sim_step_size_pretrain'], config['sim_gamma_pretrain'])
-    # scheduler_sim = torch.optim.lr_scheduler.StepLR(optimizer_sim, config['sim_step_size'], config['sim_gamma'])
 
     # resuming training
     if args.pretrained_stn is not None:
@@ -312,9 +310,6 @@ def train(args):
 
                 GLOBAL_STEP += 1
 
-            # if not args.baseline and args.pretrain_sim:
-            #   scheduler_sim_pretrain.step()
-
             # VALIDATION
             if epoch == start_epoch or epoch % config['val_period'] == 0:
                 enc.eval(), enc.disable_grads()
@@ -412,9 +407,9 @@ def train(args):
             sim.eval(), sim.disable_grads()
 
             moving_warped = model(input)
-            input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
+            input_warped = torch.cat((moving_warped, fixed['im']), dim=1) * fixed['mask']
 
-            data_term = sim(input_warped, mask=fixed['mask'])
+            data_term = sim(input_warped)
             reg_term = model.regularizer()
             loss_registration = data_term + reg_weight * reg_term
 
@@ -470,10 +465,10 @@ def train(args):
 
         sim.train(), sim.enable_grads()
 
-        input_plus = torch.cat((moving_warped, sample_plus), dim=1)
-        loss_plus = sim(input_plus, mask=fixed['mask'])
-        input_minus = torch.cat((moving['im'], fixed['im']), dim=1)
-        loss_minus = sim(input_minus, mask=fixed['mask'])
+        input_plus = torch.cat((moving_warped, sample_plus), dim=1) * fixed['mask']
+        loss_plus = sim(input_plus)
+        input_minus = torch.cat((moving['im'], fixed['im']), dim=1) * fixed['mask']
+        loss_minus = sim(input_minus)
 
         loss_sim = loss_plus.mean() - loss_minus.mean()
 
