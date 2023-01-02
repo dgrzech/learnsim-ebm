@@ -68,7 +68,7 @@ class MI(nn.Module):
         y = y.flatten(start_dim=2, end_dim=-1)
 
         # compute joint distribution
-        p_joint = self._compute_joint_prob(x, y)
+        p_joint = self.__joint_prob(x, y)
 
         # marginalise the joint distribution to get marginal distributions, (batch_size, x_bins, y_bins)
         p_x = torch.sum(p_joint, dim=2)
