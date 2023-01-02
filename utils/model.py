@@ -142,7 +142,8 @@ class BaseModel(nn.Module):
         with torch.no_grad():
             nn.init.ones_(self.agg.weight)
             self.agg.weight.add_(torch.randn_like(self.agg.weight).multiply(1e-7))
-
+        
+        self.default_mask = None
         self.disable_grads()
 
     def enable_grads(self):
@@ -185,7 +186,10 @@ class BaseModel(nn.Module):
         z = self.encode(z_fixed, z_moving)
 
         if mask is None:
-            mask = torch.ones_like(z)
+            if self.default_mask is None:
+                self.default_mask = torch.ones_like(z)
+
+            mask = self.default_mask
 
         return z.sum(dim=(1, 2, 3, 4)) / mask.sum(dim=(1, 2, 3, 4))
 
@@ -434,7 +438,7 @@ class UNet(nn.Module):
         encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
 
         if old:
-            sim = SimilarityMetricOld(no_features=[8, 16, 16])
+            sim = SimilarityMetricOld(no_features=[4, 8, 8])
         else:
             sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm, use_strided_conv=use_strided_conv)
 
