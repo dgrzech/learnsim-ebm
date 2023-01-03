@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from abc import ABC, abstractmethod
 from torch.nn.utils import spectral_norm
 
+from .loss import MI
+
 
 def cubic_B_spline_1D_value(x):
     """
@@ -222,7 +224,7 @@ class Model(ABC):
 
     
 class SimilarityMetric(nn.Module, Model):
-    def __init__(self, activation_fn="tanh", enable_spectral_norm=True, use_bias=True, use_strided_conv=True):
+    def __init__(self, activation_fn="tanh", enable_spectral_norm=True, init='ssd', use_bias=True, use_strided_conv=True):
         super(SimilarityMetric, self).__init__()
 
         if activation_fn == 'tanh':
@@ -242,6 +244,11 @@ class SimilarityMetric(nn.Module, Model):
         self.conv5 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
         self.conv6 = f(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
         
+        self.init = init
+
+        if self.init == 'mi':
+            self.mi_module = MI()
+
     def _forward(self, input):
         y1 = self.activation_fn(self.conv1(input))
         y2 = self.activation_fn(self.conv2(y1))
@@ -255,9 +262,13 @@ class SimilarityMetric(nn.Module, Model):
     def forward(self, input, mask=None, reduction='mean'):
         im_fixed = input[:, 1:2]
         im_moving_warped = input[:, 0:1]
-
-        diff = (im_fixed - im_moving_warped) ** 2
-        z = self._forward(diff)
+        
+        if self.init == 'ssd':
+            diff = (im_fixed - im_moving_warped) ** 2
+            z = self._forward(diff)
+        elif self.init == 'mi':
+            z_fixed, z_moving_warped = self._forward(im_fixed), self._forward(im_moving_warped)
+            z = self.mi_module(z_fixed, z_moving_warped)
 
         if reduction == 'mean':
             return z.mean()
@@ -432,7 +443,7 @@ class Decoder(nn.Module, Model):
 
 
 class UNet(nn.Module):
-    def __init__(self, input_size, activation_fn_sim='tanh', cps=None, enable_spectral_norm=False, old=False, use_strided_conv=True):
+    def __init__(self, input_size, activation_fn_sim='tanh', cps=None, enable_spectral_norm=False, init='ssd', old=False, use_strided_conv=True):
         super(UNet, self).__init__()
 
         encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
@@ -440,7 +451,7 @@ class UNet(nn.Module):
         if old:
             sim = SimilarityMetricOld(no_features=[4, 8, 8])
         else:
-            sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm, use_strided_conv=use_strided_conv)
+            sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm, init=init, use_strided_conv=use_strided_conv)
 
         self.submodules = nn.ModuleDict({'enc': encoder, 'dec': decoder, 'sim': sim})
 
