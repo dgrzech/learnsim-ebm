@@ -66,12 +66,13 @@ class Cubic_B_spline_FFD_3D(nn.Module):
 
         self.dims = dims
         self.stride = cps
-        self.kernels, self.padding = nn.ParameterList(), list()
+        self.kernels, self.padding = list(), list()
 
-        for s in self.stride:
+        for idx, s in enumerate(self.stride):
             kernel = B_spline_1D_kernel(s)
-
-            self.kernels.append(nn.Parameter(kernel, requires_grad=False))
+            
+            self.register_buffer('kernel' + str(idx), kernel, persistent=False)
+            self.kernels.append(getattr(self, 'kernel' + str(idx)))
             self.padding.append((len(kernel) - 1) // 2)
 
     def forward(self, v):
@@ -132,7 +133,7 @@ class BaseModel(nn.Module):
     base class for all models
     """
 
-    def __init__(self, no_features=None):
+    def __init__(self, input_size, no_features=None):
         super(BaseModel, self).__init__()
         
         activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
@@ -145,7 +146,8 @@ class BaseModel(nn.Module):
             nn.init.ones_(self.agg.weight)
             self.agg.weight.add_(torch.randn_like(self.agg.weight).multiply(1e-7))
         
-        self.default_mask = None
+        default_mask = torch.ones((1, *input_size), dtype=torch.bool)
+        self.register_buffer('mask', default_mask, persistent=False)
         self.disable_grads()
 
     def enable_grads(self):
@@ -188,10 +190,7 @@ class BaseModel(nn.Module):
         z = self.encode(z_fixed, z_moving)
 
         if mask is None:
-            if self.default_mask is None:
-                self.default_mask = torch.ones_like(z)
-
-            mask = self.default_mask
+            mask = self.mask
 
         return z.sum(dim=(1, 2, 3, 4)) / mask.sum(dim=(1, 2, 3, 4))
 
@@ -206,8 +205,8 @@ class BaseModel(nn.Module):
 
 
 class SimilarityMetricOld(BaseModel):
-    def __init__(self, no_features=None):
-        super(SimilarityMetricOld, self).__init__(no_features)
+    def __init__(self, input_size, no_features=None):
+        super(SimilarityMetricOld, self).__init__(input_size, no_features)
 
     def encode(self, im_fixed, im_moving):
         return (im_fixed - im_moving) ** 2
@@ -403,8 +402,7 @@ class Decoder(nn.Module, Model):
 
     def warp_image(self, img, disp=None, interpolation='bilinear', padding='border'):
         if disp is None:
-            wrp = transform(img, self.T, interpolation=interpolation, padding=padding)
-            return wrp
+            return transform(img, self.T, interpolation=interpolation, padding=padding)
 
         T = self.move_grid_dims(self.grid + disp)
         return transform(img, T, interpolation=interpolation, padding=padding)
@@ -429,11 +427,19 @@ class Decoder(nn.Module, Model):
 
         if self.cps is not None:
             flow = self.evaluate_cubic_bspline_ffd(flow)
+        
+        disp, disp_inv = self.compute_disp(flow)
 
-        self.disp, self.disp_inv = self.compute_disp(flow)
-        self.T = self.move_grid_dims(self.grid + self.disp)
-        self.T2 = self.grid + self.disp  # NOTE (DG): ugly hack
-        self.T_inv = self.move_grid_dims(self.grid + self.disp_inv)
+        self.register_buffer('disp', disp, persistent=False)
+        self.register_buffer('disp_inv', disp_inv, persistent=False)
+        
+        T2 = self.grid + disp  # ugly hack
+        T = self.move_grid_dims(T2)
+        T_inv = self.move_grid_dims(self.grid + disp_inv)
+
+        self.register_buffer('T', T, persistent=False)
+        self.register_buffer('T2', T2, persistent=False)
+        self.register_buffer('T_inv', T_inv, persistent=False)
 
         # extract first channel for warping
         im = x.narrow(dim=1, start=0, length=1)
@@ -449,7 +455,7 @@ class UNet(nn.Module):
         encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
 
         if old:
-            sim = SimilarityMetricOld(no_features=[4, 8, 8])
+            sim = SimilarityMetricOld(input_size=input_size, no_features=[4, 8, 8])
         else:
             sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm, init=init, use_strided_conv=use_strided_conv)
 
