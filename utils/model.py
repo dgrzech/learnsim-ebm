@@ -146,7 +146,7 @@ class BaseModel(nn.Module):
             nn.init.ones_(self.agg.weight)
             self.agg.weight.add_(torch.randn_like(self.agg.weight).multiply(1e-7))
         
-        default_mask = torch.ones((1, *input_size), dtype=torch.bool)
+        default_mask = torch.ones((1, 1, *input_size), dtype=torch.bool)
         self.register_buffer('mask', default_mask, persistent=False)
         self.disable_grads()
 
