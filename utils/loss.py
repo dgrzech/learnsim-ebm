@@ -8,20 +8,19 @@ class LCC(nn.Module):
     def __init__(self, s=1):
         super(LCC, self).__init__()
 
+        self.s = s
         self.sz = float((2 * s + 1) ** 3)
-        self.kernel = nn.Conv3d(1, 1, kernel_size=2*s+1, stride=1, padding=s, bias=False, padding_mode='replicate')
-        nn.init.ones_(self.kernel.weight)
 
-        for param in self.parameters():
-            param.requires_grad_(False)
+        kernel = torch.ones((1, 1, 2*s+1, 2*s+1, 2*s+1))
+        self.register_buffer('kernel', kernel, persistent=False)
 
     def forward(self, im_fixed, im_moving):
-        u_F = self.kernel(im_fixed) / self.sz
-        u_M = self.kernel(im_moving) / self.sz
+        u_F = nn.functional.conv3d(im_fixed, self.kernel, padding=self.s) / self.sz
+        u_M = nn.functional.conv3d(im_moving, self.kernel, padding=self.s) / self.sz
 
-        cross = self.kernel((im_fixed - u_F) * (im_moving - u_M))
-        var_F = self.kernel((im_fixed - u_F) ** 2)
-        var_M = self.kernel((im_moving - u_M) ** 2)
+        cross = nn.functional.conv3d((im_fixed - u_F) * (im_moving - u_M), self.kernel, padding=self.s)
+        var_F = nn.functional.conv3d((im_fixed - u_F) ** 2, self.kernel, padding=self.s)
+        var_M = nn.functional.conv3d((im_moving - u_M) ** 2, self.kernel, padding=self.s)
 
         z = cross * cross / (var_F * var_M + 1e-5)
         return -1.0 * z.mean()
