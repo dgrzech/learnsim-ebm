@@ -42,7 +42,7 @@ def set_up_model_and_preprocessing(args):
         raise NotImplementedError(f'Loss {args.loss} not supported')
 
     # model
-    model = UNet(config['dims'], activation_fn_sim=config['activation_fn_sim'], enable_spectral_norm=config['spectral_norm'], init=config['loss_init'], old=config['old'], use_strided_conv=config['use_strided_conv']).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
+    model = UNet(config).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
     # model = torch.compile(model)
     no_params_sim, no_params_enc, no_params_dec = model.no_params
     print(f'NO. PARAMETERS OF THE SIMILARITY METRIC: {no_params_sim}, ENCODER: {no_params_enc}, DECODER: {no_params_dec}')

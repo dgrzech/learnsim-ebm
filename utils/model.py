@@ -69,11 +69,11 @@ class Cubic_B_spline_FFD_3D(nn.Module):
         self.kernels, self.padding = list(), list()
 
         for idx, s in enumerate(self.stride):
-            kernel = B_spline_1D_kernel(s)
+            kernel = B_spline_1D_kernel(s).cuda()
             
             self.register_buffer('kernel' + str(idx), kernel, persistent=False)
             self.kernels.append(getattr(self, 'kernel' + str(idx)))
-            self.padding.append((len(kernel) - 1) // 2)
+            self.padding.append((len(kernel) - 1) // 2 - 2)
 
     def forward(self, v):
         # compute B-spline tensor product via separable 1D convolutions
@@ -205,8 +205,8 @@ class BaseModel(nn.Module):
 
 
 class SimilarityMetricOld(BaseModel):
-    def __init__(self, input_size, no_features=None):
-        super(SimilarityMetricOld, self).__init__(input_size, no_features)
+    def __init__(self, cfg, no_features=[4, 8, 8]):
+        super(SimilarityMetricOld, self).__init__(cfg['dims'], no_features)
 
     def encode(self, im_fixed, im_moving):
         return (im_fixed - im_moving) ** 2
@@ -223,8 +223,10 @@ class Model(ABC):
 
     
 class SimilarityMetric(nn.Module, Model):
-    def __init__(self, activation_fn="tanh", enable_spectral_norm=True, init='ssd', use_bias=True, use_strided_conv=True):
+    def __init__(self, cfg):
         super(SimilarityMetric, self).__init__()
+        
+        activation_fn = cfg['activation_fn_sim']
 
         if activation_fn == 'tanh':
             self.activation_fn = lambda x: torch.tanh(x)
@@ -233,8 +235,8 @@ class SimilarityMetric(nn.Module, Model):
         elif activation_fn == 'none':
             self.activation_fn = lambda x: x
 
-        f = lambda x: spectral_norm(x) if enable_spectral_norm else x
-        self.stride = 2 if use_strided_conv else 1
+        f = lambda x: spectral_norm(x) if cfg['spectral_norm'] else x
+        self.stride = 2 if cfg['use_strided_conv'] else 1
 
         self.conv1 = f(nn.Conv3d(1, 4, kernel_size=3, padding=1, bias=use_bias))
         self.conv2 = f(nn.Conv3d(4, 4, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
@@ -243,10 +245,10 @@ class SimilarityMetric(nn.Module, Model):
         self.conv5 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
         self.conv6 = f(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
         
-        self.init = init
+        self.init = cfg['loss_init']
 
         if self.init == 'mi':
-            self.mi_module = MI()
+            self.mi_module = MI(sample_ratio=cfg['sample_ratio'])
 
     def _forward(self, input):
         y1 = self.activation_fn(self.conv1(input))
@@ -449,15 +451,18 @@ class Decoder(nn.Module, Model):
 
 
 class UNet(nn.Module):
-    def __init__(self, input_size, activation_fn_sim='tanh', cps=None, enable_spectral_norm=False, init='ssd', old=False, use_strided_conv=True):
+    def __init__(self, cfg):
         super(UNet, self).__init__()
-
+        
+        input_size = cfg['dims']
+        cps = cfg.get('cps', None)
+        
         encoder, decoder = Encoder(), Decoder(input_size, cps=cps)
 
-        if old:
-            sim = SimilarityMetricOld(input_size=input_size, no_features=[4, 8, 8])
+        if cfg['old']:
+            sim = SimilarityMetricOld(cfg)
         else:
-            sim = SimilarityMetric(activation_fn=activation_fn_sim, enable_spectral_norm=enable_spectral_norm, init=init, use_strided_conv=use_strided_conv)
+            sim = SimilarityMetric(cfg)
 
         self.submodules = nn.ModuleDict({'enc': encoder, 'dec': decoder, 'sim': sim})
 
