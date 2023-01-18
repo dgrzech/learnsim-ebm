@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from torch.nn.utils import spectral_norm
 
 from .loss import MI
+from .data_loader import rescale_im_intensity
 
 
 def cubic_B_spline_1D_value(x):
@@ -227,6 +228,7 @@ class SimilarityMetric(nn.Module, Model):
         super(SimilarityMetric, self).__init__()
         
         activation_fn = cfg['activation_fn_sim']
+        use_bias = True
 
         if activation_fn == 'tanh':
             self.activation_fn = lambda x: torch.tanh(x)
@@ -268,7 +270,7 @@ class SimilarityMetric(nn.Module, Model):
             diff = (im_fixed - im_moving_warped) ** 2
             z = self._forward(diff)
         elif self.init == 'mi':
-            z_fixed, z_moving_warped = self._forward(im_fixed), self._forward(im_moving_warped)
+            z_fixed, z_moving_warped = rescale_im_intensity(self._forward(im_fixed)), rescale_im_intensity(self._forward(im_moving_warped))
             z = self.mi_module(z_fixed, z_moving_warped)
 
         if reduction == 'mean':
