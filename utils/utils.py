@@ -2,6 +2,7 @@ import json
 import math
 import numpy as np
 import os
+import SimpleITK as sitk
 import torch
 import torch.nn.functional as F
 
@@ -54,7 +55,6 @@ def get_noise_Langevin(sigma, tau):
     return math.sqrt(2.0 * tau) * sigma * eps
 
 
-
 @torch.no_grad()
 def calc_dsc(seg_fixed, seg_moving, structures_dict):
     batch_size = seg_fixed.size(0)
@@ -78,6 +78,38 @@ def calc_dsc(seg_fixed, seg_moving, structures_dict):
             dsc[idx, structure_idx] = score
 
     return dsc
+
+
+@torch.no_grad()
+def calc_asd(seg_fixed, seg_moving, spacing, structures_dict):
+    batch_size = seg_fixed.size(0)
+    asd = torch.zeros(batch_size, len(structures_dict))
+
+    hausdorff_distance_filter = sitk.HausdorffDistanceImageFilter()
+
+    for idx, im_pair in enumerate(range(batch_size)):
+        for structure_idx, structure_name in enumerate(structures_dict):
+            label = structures_dict[structure_name]
+
+            seg_fixed_arr = seg_fixed[idx].squeeze().cpu().numpy()
+            seg_moving_arr = seg_moving[idx].squeeze().cpu().numpy()
+
+            seg_fixed_structure = np.where(seg_fixed_arr == label, 1, 0)
+            seg_moving_structure = np.where(seg_moving_arr == label, 1, 0)
+
+            seg_fixed_im = sitk.GetImageFromArray(seg_fixed_structure)
+            seg_moving_im = sitk.GetImageFromArray(seg_moving_structure)
+
+            seg_fixed_im.SetSpacing(spacing)
+            seg_moving_im.SetSpacing(spacing)
+
+            seg_fixed_contour = sitk.LabelContour(seg_fixed_im)
+            seg_moving_contour = sitk.LabelContour(seg_moving_im)
+
+            hausdorff_distance_filter.Execute(seg_fixed_contour, seg_moving_contour)
+            asd[idx, structure_idx] = hausdorff_distance_filter.GetAverageHausdorffDistance()
+
+    return asd
 
 
 @torch.no_grad()

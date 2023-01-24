@@ -12,7 +12,7 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-from utils import UNet, Learn2RegDataLoader, OasisDataset, calc_dsc, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, rescale_im_intensity, save_model, to_device, write_hparams, write_json
+from utils import UNet, Learn2RegDataLoader, OasisDataset, calc_asd, calc_dsc, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, rescale_im_intensity, save_model, to_device, write_hparams, write_json
 
 
 DEVICE = torch.device('cuda:0')
@@ -83,6 +83,8 @@ def test(args):
 
     dataset_test = dataset_val
     dataloader_test = dataloader_val
+
+    spacing = dataset_test.im_spacing.numpy().tolist()
     structures_dict = dataset_test.structures_dict
 
     grid = init_grid_im(config['dims'], spacing=3).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
@@ -111,10 +113,12 @@ def test(args):
         with torch.no_grad():
             moving_warped = model(input)
             seg_moving_warped = model.warp_image(moving['seg'].float(), interpolation='nearest').long()
-
+            
+            asd = calc_asd(fixed['seg'], seg_moving_warped, spacing, structures_dict)[0]
             dsc = calc_dsc(fixed['seg'], seg_moving_warped, structures_dict)[0]
             
             for structure_idx, structure_name in enumerate(structures_dict):
+                log_dict[f'test/{idx}/metric_asd_{structure_name}'] = asd[structure_idx].item()
                 log_dict[f'test/{idx}/metric_dsc_{structure_name}'] = dsc[structure_idx].item()
 
             dsc_mean = torch.mean(dsc, dim=0)
