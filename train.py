@@ -142,8 +142,8 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, 
 
     with torch.no_grad():
         writer.add_images('train/sample_plus/sagittal', sample_plus[:, :, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
-        writer.add_images('train/sample_plus/coronal', sample_plus[:, :, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
-        writer.add_images('train/sample_plus/axial', sample_plus[..., sample_plus.size(4) // 2], GLOBAL_STEP)
+        writer.add_images('train/sample_plus/axial', sample_plus[:, :, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_plus/coronal', sample_plus[..., sample_plus.size(4) // 2], GLOBAL_STEP)
     
     if wandb:
         wandb_data = {'train/sample_plus': utils.plot_tensor(sample_plus)}
