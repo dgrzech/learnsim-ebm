@@ -94,42 +94,34 @@ def set_up_model_and_preprocessing(args):
     return config_dict
 
 
-def generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, writer, wandb=False):
+def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, wandb=False):
     global GLOBAL_STEP
 
     no_samples_SGLD = config['no_samples_SGLD']
     
-    def init_optimizer_LD(config, sample_plus):
-        return torch.optim.Adam([sample_plus], lr=config['tau'])
-
-    def init_sample(config, fixed):
+    def init_sample(config, fixed, moving, model):
         if config['init_sample'] == 'rand':
-            sample_plus = torch.rand_like(fixed['im']).detach()
+            sample_plus = torch.cat(torch.rand_like(moving['im']), torch.rand_like(fixed['im']), dim=1).detach()
         elif config['init_sample'] == 'fixed':
-            sample_plus = fixed['im'].clone().detach()
+            moving_warped = model(torch.cat((moving['im'], fixed['im']), dim=1))
+            sample_plus = torch.cat((moving_warped.clone(), fixed['im'].clone()), dim=1).detach()
         else:
             raise NotImplementedError
 
         sample_plus.requires_grad_(True)
         return sample_plus
-
-    sample_plus = init_sample(config, fixed)
-    optimizer_LD = init_optimizer_LD(config, sample_plus)
+    
+    sample_plus = init_sample(config, fixed, moving, model)
+    optimizer_LD = torch.optim.Adam([sample_plus], lr=config['tau'])
 
     with torch.no_grad():
-        input_minus = torch.cat((moving['im'], fixed['im']), dim=1)
-
         sigma, tau = torch.ones_like(sample_plus), config['tau']
         sigma.requires_grad_(False)
 
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_plus_noise = SGLD.apply(sample_plus, sigma, tau)
-        input_plus = torch.cat((moving_warped, sample_plus_noise), dim=1)
-
-        loss_plus = sim(input_plus)
-        loss_minus = sim(input_minus)
-
-        loss = (loss_plus - loss_minus) * fixed['mask'].sum()
+        loss_plus = sim(sample_plus_noise * fixed['mask'])
+        loss = loss_plus * fixed['mask'].sum()
 
         optimizer_LD.zero_grad(set_to_none=True)
         loss.backward()
@@ -141,17 +133,22 @@ def generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, 
         GLOBAL_STEP += 1
 
     with torch.no_grad():
-        writer.add_images('train/sample_plus/sagittal', sample_plus[:, :, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
-        writer.add_images('train/sample_plus/axial', sample_plus[:, :, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
-        writer.add_images('train/sample_plus/coronal', sample_plus[..., sample_plus.size(4) // 2], GLOBAL_STEP)
+        writer.add_images('train/sample_plus/fixed/sagittal', sample_plus[:, 1:2, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_plus/fixed/axial', sample_plus[:, 1:2, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_plus/fixed/coronal', sample_plus[:, 1:2, :, :, sample_plus.size(4) // 2], GLOBAL_STEP)
+
+        writer.add_images('train/sample_plus/moving/sagittal', sample_plus[:, 0:1, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_plus/moving/axial', sample_plus[:, 0:1, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
+        writer.add_images('train/sample_plus/moving/coronal', sample_plus[:, 0:1, :, :, sample_plus.size(4) // 2], GLOBAL_STEP)
     
     if wandb:
-        wandb_data = {'train/sample_plus': utils.plot_tensor(sample_plus)}
+        wandb_data = {'train/sample_plus/fixed': utils.plot_tensor(sample_plus[:, 1:2])}
+        wandb_data = {'train/sample_plus/moving': utils.plot_tensor(sample_plus[:, 0:1])}
         wandb.log(wandb_data)
 
     plt.close('all')
 
-    return torch.clamp(sample_plus_noise, min=0.0, max=1.0).detach()
+    return torch.clamp(sample_plus, min=0.0, max=1.0).detach()
 
 
 def train(args):
@@ -428,9 +425,9 @@ def train(args):
             sim.eval(), sim.disable_grads()
 
             moving_warped = model(input)
-            input_warped = torch.cat((moving_warped, fixed['im']), dim=1) * fixed['mask']
+            input_warped = torch.cat((moving_warped, fixed['im']), dim=1)
 
-            data_term = sim(input_warped)
+            data_term = sim(input_warped * fixed['mask'])
             reg_term = model.regularizer()
             loss_registration = data_term + reg_weight * reg_term
 
@@ -481,16 +478,14 @@ def train(args):
         # SIMILARITY METRIC
         enc.eval(), enc.disable_grads()
         dec.eval(), dec.disable_grads()
-
-        moving_warped = model(input)
-        sample_plus = generate_samples_from_EBM(config, epoch, sim, fixed, moving, moving_warped, writer)
+        
+        sample_plus = generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer)
+        sample_minus = torch.cat((moving['im'], fixed['im']), dim=1)
 
         sim.train(), sim.enable_grads()
-
-        input_plus = torch.cat((moving_warped, sample_plus), dim=1) * fixed['mask']
-        loss_plus = sim(input_plus)
-        input_minus = torch.cat((moving['im'], fixed['im']), dim=1) * fixed['mask']
-        loss_minus = sim(input_minus)
+        
+        loss_plus = sim(sample_plus * fixed['mask'])
+        loss_minus = sim(sample_minus * fixed['mask'])
 
         loss_sim = loss_plus.mean() - loss_minus.mean()
 
