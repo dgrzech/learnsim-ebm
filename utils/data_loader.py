@@ -227,6 +227,202 @@ class OasisDataset(BaseImageRegistrationDataset):
         return self._get_fixed(idx), self._get_moving(idx)
 
 
+################################### TASK 1 classes
+
+
+structures_dict_4 = {'liver': 1,
+                     'spleen': 2,
+                     'right_kidney': 3,
+                     'left_kidney': 4}
+
+structures_dict_RGB = {'liver': [0, 245, 50, 0],
+                       'spleen': [0, 20, 80, 160],
+                       'right_kidney': [0, 20, 140, 134],
+                       'left_kidney': [0, 0, 250, 60]}
+
+
+class MrCtDataset(BaseImageRegistrationDataset):
+    def __init__(self, save_paths, im_pairs, dims, is_val=False, train_paired_only=False, data_path=''):
+        if data_path == '':
+            self.data_path = '/vol/biodata/data/learn2reg/2021/task01/'
+        else:
+            self.data_path = data_path
+        self.ct_folder, self.mr_folder, self.paired_folder = "L2R_Task1_CT", "L2R_Task1_MR", "L2R_Task1_MRCT_Train"
+        self.train_paired_only = train_paired_only
+
+        im_filename, seg_filename, mask_filename = '', '', 'L2R_Task1_ROI'
+        structures_dict = structures_dict_4  # segmentation IDs
+
+        im_pairs, val_pairs = self._get_im_pairs(im_pairs, save_paths)
+
+        if is_val:
+            im_pairs = val_pairs
+
+        super().__init__(self.data_path, save_paths, im_pairs, im_filename, mask_filename, seg_filename, dims,
+                         mu_v_init=0.0, sigma_v_init=1e-5, u_v_init=0.0, cps=None, structures_dict=structures_dict)
+
+        # self.mean, self.std_dev = 92.89025002195125, 49.03549963976218  # NOTE (DG): pre-computed by me in a jupyter notebook, (HQ): ROI only
+        self.mean, self.std_dev = -338.43452, 545.05903  # NOTE (HQ): entire image not only ROI
+
+    def _get_im_pairs(self, im_pairs_path, save_paths, val_ids=[12, 14, 16]):
+        val_im_pairs_path = []
+
+        if im_pairs_path == '':
+            mr_paths_train, mr_paths_val = self.images_in_folder("_MR.nii.gz",
+                                                                 os.path.join(self.data_path, self.mr_folder),
+                                                                 os.path.join(self.data_path, self.paired_folder), val_ids)
+            ct_paths_train, _ = self.images_in_folder("_CT.nii.gz",
+                                                                 os.path.join(self.data_path, self.ct_folder),
+                                                                 os.path.join(self.data_path, self.paired_folder), val_ids)
+
+            if self.train_paired_only:
+                # HQ: Trying training with paired images only
+                train_pairs = [(mr_path, ct_path) for (mr_path, ct_path) in zip(mr_paths_train, ct_paths_train)]
+            else:
+                train_pairs = []
+
+                for mr_path in mr_paths_train:
+                    for ct_path in ct_paths_train:
+                        train_pairs.append((mr_path, ct_path))
+
+            val_pairs = []
+
+            for mr_path in mr_paths_val:
+                val_pairs.append((mr_path, self.replace_right(mr_path, "MR", "CT", 1)))
+
+            train_pairs_pd = pd.DataFrame(train_pairs)
+            im_pairs_path = os.path.join(save_paths['run_dir'], 'train_pairs.csv')
+            train_pairs_pd.to_csv(im_pairs_path, header=False, index=False)
+
+            val_pairs_pd = pd.DataFrame(val_pairs)
+            val_im_pairs_path = os.path.join(save_paths['run_dir'], 'val_pairs.csv')
+            val_pairs_pd.to_csv(val_im_pairs_path, header=False, index=False)
+
+        return im_pairs_path, val_im_pairs_path
+
+    @staticmethod
+    def replace_right(source, target, replacement, replacements=None):
+        return replacement.join(source.rsplit(target, replacements))
+
+    def images_in_folder(self, key, folder_unpaired: str, folder_paired: str, pairs_val):
+        list_img_train, list_seg_train = [], []
+
+        to_exclude = ['img0036_bcv_CT.nii.gz']  # NOTE (DG): bad data
+
+        list_img = [os.path.join(folder_paired, file) for file in os.listdir(folder_paired) if key in file and 'img' in file and 'seg' not in file and 'mask' not in file and file not in to_exclude]
+        list_img_val = [file for file in list_img if int(file.split("_")[-3][-4:]) in pairs_val]
+
+        if self.train_paired_only:
+            # HQ: Trying training with paired images only
+            list_img_train = [file for file in list_img if int(file.split("_")[-3][-4:]) not in pairs_val]
+        else:
+            list_img_train = [os.path.join(folder_unpaired, file) for file in os.listdir(folder_unpaired) if key in file and 'img' in file and 'seg' not in file and 'mask' not in file and file not in to_exclude]
+            list_img_train += [file for file in list_img if int(file.split("_")[-3][-4:]) not in pairs_val]
+
+        list_seg_train += [file.replace("img", "seg") for file in list_img_train if key in file]
+
+        return list_img_train, list_img_val
+
+    def _get_fixed(self, idx):
+        ID_fixed = self.im_pairs['fixed'].iloc[idx]
+
+        # fixed image
+        mask_fixed, _ = self._get_mask(ID_fixed)
+        im_fixed, _ = self._get_im(ID_fixed)
+        # im_fixed, _ = self._get_im(ID_fixed, mask=mask_fixed, normalisation='per-case-z-score')
+        seg_fixed, _ = self._get_seg(ID_fixed)
+
+        return {'im': im_fixed, 'mask': mask_fixed, 'seg': seg_fixed}
+
+    def _get_moving(self, idx):
+        ID_moving = self.im_pairs['moving'].iloc[idx]
+
+        # moving image
+        im_moving, _ = self._get_im(ID_moving, normalisation='z-score')
+        mask_moving, _ = self._get_mask(ID_moving)
+        seg_moving, _ = self._get_seg(ID_moving)
+
+        return {'im': im_moving, 'mask': mask_moving, 'seg': seg_moving}
+
+    def _get_im(self, ID, mask=None, normalisation='linear'):
+        im_path = self._get_im_path_from_ID(ID)
+
+        im, spacing = self._load_im_or_mask_or_seg_file(im_path)
+        im = self._preprocess_im(im, mask=mask, normalisation=normalisation)
+
+        return im, spacing
+
+    def _get_im_path_from_ID(self, subject_idx):
+        return subject_idx
+
+    def _get_seg_path_from_ID(self, subject_idx: str):
+        return subject_idx.replace("img", "seg")
+
+    def _get_mask_path_from_ID(self, subject_idx: str):
+        tmp_list = subject_idx.split("/")
+        tmp_list.insert(-2, self.mask_filename)
+        tmp_list[-1] = tmp_list[-1].replace('img', 'mask')
+        return "/".join(tmp_list)
+
+    def _preprocess(self, im_or_mask_or_seg):
+        im_or_mask_or_seg = im_or_mask_or_seg.float()
+        return im_or_mask_or_seg.permute([0, 1, 4, 3, 2])
+
+    def _preprocess_im(self, im, mask=None, normalisation='linear'):
+        im = self._preprocess(im)
+        im = F.interpolate(im, size=self.dims, mode='trilinear', align_corners=True)
+
+        if normalisation == 'linear':
+            return rescale_im_intensity(im).squeeze(0)
+        elif normalisation == 'per-case-z-score':
+            mean_roi = im[mask].mean()
+            std_dev_roi = im[mask].std()
+
+            return (im.squeeze(0) - mean_roi) / std_dev_roi
+        elif normalisation == 'z-score':
+            return (im.squeeze(0) - self.mean) / self.std_dev
+
+        raise NotImplementedError
+
+    def _preprocess_mask_or_seg(self, mask_or_seg):
+        mask_or_seg = self._preprocess(mask_or_seg)
+        mask_or_seg = F.interpolate(mask_or_seg, size=self.dims, mode='nearest')
+
+        return mask_or_seg.squeeze(0)
+
+    def __getitem__(self, idx):
+        fixed = self._get_fixed(idx)
+        moving = self._get_moving(idx)
+        var_params_q_v = self._get_var_params(idx)
+
+        return idx, fixed, moving, var_params_q_v
+
+#
+# class DatasetTask1(MrCtDataset):
+#     def __init__(self, save_paths, im_pairs, dims, is_val=False, train_paired_only=False):  # , offline_augmentation=False
+#         super().__init__(save_paths, im_pairs, dims, is_val=is_val, train_paired_only=train_paired_only)
+#
+#         self.no_classes = 4
+#         self.mask_RGB = self._get_mask_RGB(structures_dict_RGB)
+#
+#         # flag for Zeju's augmentation
+#         # self.offline_augmentation = offline_augmentation
+#
+#     def _get_mask_RGB(self, structures_dict_RGB):
+#         mask_RGB = torch.zeros(len(structures_dict_RGB) + 1, 4, *self.dims)
+#
+#         for idx, (structure_name, RGB) in enumerate(structures_dict_RGB.items()):
+#             mask_RGB[idx + 1, 1, ...].add_(RGB[1])
+#             mask_RGB[idx + 1, 2, ...].add_(RGB[2])
+#             mask_RGB[idx + 1, 3, ...].add_(RGB[3])
+#
+#         return mask_RGB
+#
+#     def _preprocess_mask_or_seg(self, mask_or_seg_orig):
+#         return super()._preprocess_mask_or_seg(mask_or_seg_orig)
+
+#########################################################
+
 class BaseDataLoader(DataLoader):
     def __init__(self, dataset, batch_size, no_workers, no_samples_per_epoch=None):
         init_kwargs = {'batch_size': batch_size, 'dataset': dataset, 'num_workers': no_workers, 'pin_memory': True}

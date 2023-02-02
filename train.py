@@ -12,7 +12,7 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-from utils import LCC, MI, SSD, UNet, Learn2RegDataLoader, OasisDataset, SGLD,\
+from utils import LCC, MI, SSD, UNet, Learn2RegDataLoader, OasisDataset, SGLD, MrCtDataset, \
     calc_dsc, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, rescale_im_intensity, save_model, to_device, write_hparams, write_json
 
 
@@ -198,10 +198,16 @@ def train(args):
     batch_size, no_workers, no_samples_per_epoch = config['batch_size'], config['no_workers'], config['no_samples_per_epoch']
     save_paths_dict = {'run_dir': args.out}
 
-    dataset_train = OasisDataset(save_paths_dict, config['im_pairs_train'], dims, config['data_path'])
+    if not args.multimodal:
+        dataset_train = OasisDataset(save_paths_dict, config['im_pairs_train'], dims, config['data_path'])
+    else:
+        dataset_train = MrCtDataset(save_paths=save_paths_dict, im_pairs=config['im_pairs_train'], dims=dims, data_path=config['data_path'])
     dataloader_train = Learn2RegDataLoader(dataset_train, batch_size, no_workers, no_samples_per_epoch)
 
-    dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
+    if not args.multimodal:
+        dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
+    else:
+        dataset_val = MrCtDataset(save_paths=save_paths_dict, im_pairs=config['im_pairs_val'], dims=dims, data_path=config['data_path'])
     dataloader_val = Learn2RegDataLoader(dataset_val, 1, no_workers)
 
     structures_dict = dataset_train.structures_dict
@@ -573,8 +579,11 @@ if __name__ == '__main__':
     # argument parser
     parser = argparse.ArgumentParser(description='learnsim-EBM')
     # wandb args
-    parser.add_argument('--wandb', type=bool, default=False)
+    parser.add_argument('--wandb', action='store_true', default=False, help='')
+    parser.add_argument('--wandb-key', type=str, default='')
+    parser.add_argument('--wandb-entity', type=str, default='')
     parser.add_argument('--config', default=None, required=True, help='config file')
+    parser.add_argument('--multimodal', action='store_true', default=False, help='')
     parser.add_argument('--baseline', action='store_true', default=False, help='')
     parser.add_argument('--exp-name', default=None, help='experiment name')
     parser.add_argument('--pretrain-sim', dest='pretrain_sim', default=True, action='store_true')
