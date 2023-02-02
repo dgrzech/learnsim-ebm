@@ -234,6 +234,8 @@ class SimilarityMetric(nn.Module, Model):
             self.activation_fn = lambda x: torch.tanh(x)
         elif activation_fn == 'leaky_relu':
             self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        elif activation_fn == 'relu':
+            self.activation_fn = lambda x: F.relu(x)
         elif activation_fn == 'none':
             self.activation_fn = lambda x: x
 
