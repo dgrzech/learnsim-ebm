@@ -258,8 +258,8 @@ class MrCtDataset(BaseImageRegistrationDataset):
         if is_val:
             im_pairs = val_pairs
 
-        super().__init__(self.data_path, save_paths, im_pairs, im_filename, mask_filename, seg_filename, dims,
-                         mu_v_init=0.0, sigma_v_init=1e-5, u_v_init=0.0, cps=None, structures_dict=structures_dict)
+        super().__init__(self.data_path, im_pairs, im_filename, mask_filename, seg_filename, dims,
+                         structures_dict=structures_dict)
 
         # self.mean, self.std_dev = 92.89025002195125, 49.03549963976218  # NOTE (DG): pre-computed by me in a jupyter notebook, (HQ): ROI only
         self.mean, self.std_dev = -338.43452, 545.05903  # NOTE (HQ): entire image not only ROI
@@ -393,9 +393,9 @@ class MrCtDataset(BaseImageRegistrationDataset):
     def __getitem__(self, idx):
         fixed = self._get_fixed(idx)
         moving = self._get_moving(idx)
-        var_params_q_v = self._get_var_params(idx)
+        # var_params_q_v = self._get_var_params(idx)
 
-        return idx, fixed, moving, var_params_q_v
+        return fixed, moving  #, var_params_q_v
 
 #
 # class DatasetTask1(MrCtDataset):

@@ -27,7 +27,7 @@
 	"dims": [80, 96, 112],
 	"log_period": 1,
 	"val_period": 1,
-	"data_path": "/mnt/polyaxon/data1/learn2reg-2021/task3/neurite-oasis.v1.0/",
+	"data_path": "/mnt/polyaxon/data1/learn2reg-2021/task1/",
 	"im_pairs_train": "",
-	"im_pairs_val": "/mnt/polyaxon/data1/learn2reg-2021/task3/pairs_val.csv"
+	"im_pairs_val": "saved/val_pairs.csv"
 }

@@ -94,7 +94,7 @@ def set_up_model_and_preprocessing(args):
     return config_dict
 
 
-def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, wandb=False):
+def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, wandb=None):
     global GLOBAL_STEP
 
     no_samples_SGLD = config['no_samples_SGLD']
@@ -118,6 +118,7 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
         sigma, tau = torch.ones_like(sample_plus), config['tau']
         sigma.requires_grad_(False)
 
+    loss_array = []
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_plus_noise = SGLD.apply(sample_plus, sigma, tau)
         loss_plus = sim(sample_plus_noise * fixed['mask'])
@@ -129,7 +130,7 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
 
         with torch.no_grad():
             writer.add_scalar(f'train/epoch_{epoch}/sample_plus_energy', loss_plus.item(), GLOBAL_STEP)
-
+            loss_array.append(loss_plus.item())
         GLOBAL_STEP += 1
 
     with torch.no_grad():
@@ -140,10 +141,11 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
         writer.add_images('train/sample_plus/moving/sagittal', sample_plus[:, 0:1, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
         writer.add_images('train/sample_plus/moving/axial', sample_plus[:, 0:1, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
         writer.add_images('train/sample_plus/moving/coronal', sample_plus[:, 0:1, :, :, sample_plus.size(4) // 2], GLOBAL_STEP)
-    
+
     if wandb:
-        wandb_data = {'train/sample_plus/fixed': utils.plot_tensor(sample_plus[:, 1:2])}
-        wandb_data = {'train/sample_plus/moving': utils.plot_tensor(sample_plus[:, 0:1])}
+        wandb_data = {'train/sample_plus/fixed': utils.plot_tensor(sample_plus[:, 1:2]),
+                      'train/sample_plus/moving': utils.plot_tensor(sample_plus[:, 0:1]),
+                      f'train/epoch_{epoch}/sample_plus_energy': loss_array}
         wandb.log(wandb_data)
 
     plt.close('all')
@@ -204,7 +206,7 @@ def train(args):
     if not args.multimodal:
         dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
     else:
-        dataset_val = MrCtDataset(save_paths=save_paths_dict, im_pairs=config['im_pairs_val'], dims=dims, data_path=config['data_path'])
+        dataset_val = MrCtDataset(save_paths=save_paths_dict, im_pairs=os.path.join(save_paths_dict['run_dir'], 'val_pairs.csv'), dims=dims, data_path=config['data_path'])
     dataloader_val = Learn2RegDataLoader(dataset_val, 1, no_workers)
 
     structures_dict = dataset_train.structures_dict
