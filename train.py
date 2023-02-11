@@ -91,6 +91,7 @@ def set_up_model_and_preprocessing(args):
                    'scheduler_sim_pretrain': scheduler_sim_pretrain, 'scheduler_sim': scheduler_sim}
     print(config_dict)
 
+
     return config_dict
 
 
@@ -593,6 +594,12 @@ if __name__ == '__main__':
 
     # training
     args = parser.parse_args()
+
+    try:
+        from polyaxon_client.tracking import get_outputs_path
+        args.out = get_outputs_path()
+    except Exception as e:
+        print("Probably not on IFL cluster")
 
     if args.wandb:
         wandb.login(key=args.wandb_key)

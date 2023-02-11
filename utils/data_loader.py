@@ -3,6 +3,7 @@ import os
 from abc import abstractmethod
 
 import SimpleITK as sitk
+from scipy.ndimage import center_of_mass
 import numpy as np
 import pandas as pd
 import torch
@@ -327,30 +328,76 @@ class MrCtDataset(BaseImageRegistrationDataset):
         ID_fixed = self.im_pairs['fixed'].iloc[idx]
 
         # fixed image
-        mask_fixed, _ = self._get_mask(ID_fixed)
+        mask_fixed, spacing = self._get_mask(ID_fixed)
         im_fixed, _ = self._get_im(ID_fixed)
         # im_fixed, _ = self._get_im(ID_fixed, mask=mask_fixed, normalisation='per-case-z-score')
         seg_fixed, _ = self._get_seg(ID_fixed)
 
-        return {'im': im_fixed, 'mask': mask_fixed, 'seg': seg_fixed}
+        return {'im': im_fixed, 'mask': mask_fixed, 'seg': seg_fixed}, spacing
 
-    def _get_moving(self, idx):
+    def _get_moving(self, idx, fixed_center=None):
         ID_moving = self.im_pairs['moving'].iloc[idx]
 
         # moving image
-        im_moving, _ = self._get_im(ID_moving, normalisation='z-score')
-        mask_moving, _ = self._get_mask(ID_moving)
-        seg_moving, _ = self._get_seg(ID_moving)
+        mask_moving, spacing = self._get_mask(ID_moving)
+        moving_center = self._get_center_of_mask(mask_moving, np.array(spacing))
+        if fixed_center is not None:
+            translation = sitk.TranslationTransform(3)
+            tr = ((fixed_center - moving_center) * np.array([2, 2, -2]))
+            translation.SetParameters(np.floor(tr))
+        else:
+            translation = None
+        im_moving, spacing = self._get_im(ID_moving, normalisation='z-score', transform=translation)
+        seg_moving, _ = self._get_seg(ID_moving, transform=translation)
+        mask_moving, _ = self._get_mask(ID_moving, transform=translation)
 
         return {'im': im_moving, 'mask': mask_moving, 'seg': seg_moving}
 
-    def _get_im(self, ID, mask=None, normalisation='linear'):
+    @staticmethod
+    def resample(image, transform):
+        # Output image Origin, Spacing, Size, Direction are taken from the reference
+        # image in this call to Resample
+        reference_image = image
+        interpolator = sitk.sitkLinear
+        default_value = 0.0
+        return sitk.Resample(image, reference_image, transform,
+                             interpolator, default_value)
+
+    def _load_im_or_mask_or_seg_file(self, im_or_mask_or_seg_path, transform: sitk.TranslationTransform = None):
+        im_or_mask_or_seg = sitk.ReadImage(im_or_mask_or_seg_path)
+        spacing = im_or_mask_or_seg.GetSpacing()
+        if transform is not None:
+            im_or_mask_or_seg = self.resample(im_or_mask_or_seg, transform=transform)
+
+        im_or_mask_or_seg = sitk.GetArrayFromImage(im_or_mask_or_seg)
+        im_or_mask_or_seg = torch.from_numpy(im_or_mask_or_seg)
+
+        return im_or_mask_or_seg.unsqueeze(0).unsqueeze(0), spacing
+
+    def _get_im(self, ID, mask=None, normalisation='linear', transform: sitk.TranslationTransform = None):
         im_path = self._get_im_path_from_ID(ID)
 
-        im, spacing = self._load_im_or_mask_or_seg_file(im_path)
+        im, spacing = self._load_im_or_mask_or_seg_file(im_path, transform=transform)
         im = self._preprocess_im(im, mask=mask, normalisation=normalisation)
 
         return im, spacing
+
+    def _get_mask(self, ID, transform: sitk.TranslationTransform = None):
+        if self.mask_filename == '':
+            return torch.ones(self.dims_im).bool(), None
+
+        mask_path = self._get_mask_path_from_ID(ID)
+        mask, spacing = self._load_im_or_mask_or_seg_file(mask_path, transform=transform)
+        mask = self._preprocess_mask_or_seg(mask)
+
+        return mask.bool(), spacing
+
+    def _get_seg(self, ID, transform: sitk.TranslationTransform = None):
+        seg_path = self._get_seg_path_from_ID(ID)
+        seg, spacing = self._load_im_or_mask_or_seg_file(seg_path, transform=transform)
+        seg = self._preprocess_mask_or_seg(seg)
+
+        return seg.long(), spacing
 
     def _get_im_path_from_ID(self, subject_idx):
         return subject_idx
@@ -363,6 +410,14 @@ class MrCtDataset(BaseImageRegistrationDataset):
         tmp_list.insert(-2, self.mask_filename)
         tmp_list[-1] = tmp_list[-1].replace('img', 'mask')
         return "/".join(tmp_list)
+
+    def _get_center_of_mask(self, image: torch.Tensor, spacing=2):
+        if isinstance(image, torch.Tensor):
+            img = image.squeeze().numpy()
+        else:
+            img = sitk.GetArrayFromImage(image)
+        center = center_of_mass(img)
+        return center * spacing
 
     def _preprocess(self, im_or_mask_or_seg):
         im_or_mask_or_seg = im_or_mask_or_seg.float()
@@ -391,10 +446,10 @@ class MrCtDataset(BaseImageRegistrationDataset):
         return mask_or_seg.squeeze(0)
 
     def __getitem__(self, idx):
-        fixed = self._get_fixed(idx)
-        moving = self._get_moving(idx)
+        fixed, spacing = self._get_fixed(idx)
+        fixed_center = self._get_center_of_mask(fixed['mask'], np.array(spacing))
+        moving = self._get_moving(idx, fixed_center=fixed_center)
         # var_params_q_v = self._get_var_params(idx)
-
         return fixed, moving  #, var_params_q_v
 
 #
