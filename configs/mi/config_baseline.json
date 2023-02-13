@@ -4,7 +4,7 @@
 	"loss_init": "mi",
 	"alpha": 0.0,
 	"reg_energy_type": "tikhonov",
-	"reg_weight": 15000.0,
+	"reg_weight": 35000.0,
 	"activation_fn_sim": "leaky_relu",
 	"old": true,
 	"spectral_norm": false,
