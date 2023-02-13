@@ -249,6 +249,8 @@ class SimilarityMetric(nn.Module, Model):
         self.conv5 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
         self.conv6 = f(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
 
+        self.init = cfg['loss_init']
+
         if self.init == 'mi':
             self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
             self.conv7 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias)
@@ -256,10 +258,7 @@ class SimilarityMetric(nn.Module, Model):
             self.conv8 = nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias)
             self.up3 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
             self.conv9 = nn.Conv3d(8, 4, kernel_size=3, padding=1, bias=use_bias)
-        
-        self.init = cfg['loss_init']
 
-        if self.init == 'mi':
             self.mi_module = MI(sample_ratio=cfg['sample_ratio'])
 
     def _forward(self, input):
