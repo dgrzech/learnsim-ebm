@@ -248,6 +248,14 @@ class SimilarityMetric(nn.Module, Model):
         self.conv4 = f(nn.Conv3d(8, 8, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
         self.conv5 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
         self.conv6 = f(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
+
+        if self.init == 'mi':
+            self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+            self.conv7 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias)
+            self.up2 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+            self.conv8 = nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias)
+            self.up3 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+            self.conv9 = nn.Conv3d(8, 4, kernel_size=3, padding=1, bias=use_bias)
         
         self.init = cfg['loss_init']
 
@@ -261,8 +269,18 @@ class SimilarityMetric(nn.Module, Model):
         y4 = self.activation_fn(self.conv4(y3))
         y5 = self.activation_fn(self.conv5(y4))
         y6 = self.activation_fn(self.conv6(y5))
+
+        if self.init == 'ssd':
+            return y6
+
+        y7 = self.up1(y6)
+        y7 = self.activation_fn(self.conv7(y7))
+        y8 = self.up2(y7)
+        y8 = self.activation_fn(self.conv8(y8))
+        y9 = self.up3(y8)
+        y9 = self.activation_fn(self.conv9(y9))
         
-        return y6
+        return y9
 
     def forward(self, input, mask=None, reduction='mean'):
         im_fixed = input[:, 1:2]
