@@ -103,7 +103,7 @@ class BaseImageRegistrationDataset(Dataset):
         seg_fixed, _ = self._get_seg(ID_fixed)
 
         if self.mask_filename == '':
-            mask_fixed = (seg_fixed != 0)
+            mask_fixed = torch.logical_or(im_fixed > 1e-5, seg_fixed != 0)
 
         return {'im': im_fixed, 'mask': mask_fixed, 'seg': seg_fixed}
 
@@ -116,7 +116,7 @@ class BaseImageRegistrationDataset(Dataset):
         seg_moving, _ = self._get_seg(ID_moving)
 
         if self.mask_filename == '':
-            mask_moving = (seg_moving != 0)
+            mask_moving = torch.logical_or(im_moving > 1e-5, seg_moving != 0)
 
         return {'im': im_moving, 'mask': mask_moving, 'seg': seg_moving}
 
