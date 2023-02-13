@@ -118,6 +118,9 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
         sigma, tau = torch.ones_like(sample_plus), config['tau']
         sigma.requires_grad_(False)
 
+        if config['loss_init'] == 'mi':
+            sigma *= 0.25
+
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_plus_noise = SGLD.apply(sample_plus, sigma, tau)
         loss_plus = sim(sample_plus_noise * fixed['mask'])
@@ -147,7 +150,10 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
         wandb.log(wandb_data)
 
     plt.close('all')
-
+    
+    if config['loss_init'] == 'mi':
+        return rescale_im_intensity(sample_plus).detach()
+    
     return torch.clamp(sample_plus, min=0.0, max=1.0).detach()
 
 
@@ -437,6 +443,8 @@ def train(args):
             optimizer_enc.step()
             optimizer_dec.step()
 
+            GLOBAL_STEP += 1
+
             # tensorboard
             if GLOBAL_STEP % config['log_period'] == 0:
                 with torch.no_grad():
@@ -463,10 +471,6 @@ def train(args):
                                                    'fixed_masked': utils.plot_tensor(fixed_masked),
                                                    'moving_masked': utils.plot_tensor(moving_masked)})
 
-            GLOBAL_STEP += 1
-
-            if GLOBAL_STEP % config['log_period'] == 0:
-                with torch.no_grad():
                     for key, val in log_dict.items():
                         writer.add_scalar(key, val, global_step=GLOBAL_STEP)
                     
