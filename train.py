@@ -12,7 +12,7 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
-from utils import LCC, MI, SSD, UNet, Learn2RegDataLoader, OasisDataset, SGLD,\
+from utils import LCC, MI, SSD, UNet, Learn2RegDataLoader, OasisDataset, SGLD, MrCtDataset, \
     calc_dsc, calc_no_non_diffeomorphic_voxels, init_grid_im, log_images, rescale_im_intensity, save_model, to_device, write_hparams, write_json
 
 
@@ -91,10 +91,11 @@ def set_up_model_and_preprocessing(args):
                    'scheduler_sim_pretrain': scheduler_sim_pretrain, 'scheduler_sim': scheduler_sim}
     print(config_dict)
 
+
     return config_dict
 
 
-def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, wandb=False):
+def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, wandb=None):
     global GLOBAL_STEP
 
     no_samples_SGLD = config['no_samples_SGLD']
@@ -132,7 +133,7 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
 
         with torch.no_grad():
             writer.add_scalar(f'train/epoch_{epoch}/sample_plus_energy', loss_plus.item(), GLOBAL_STEP)
-
+            loss_array.append(loss_plus.item())
         GLOBAL_STEP += 1
 
     with torch.no_grad():
@@ -143,10 +144,11 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
         writer.add_images('train/sample_plus/moving/sagittal', sample_plus[:, 0:1, sample_plus.size(2) // 2, ...], GLOBAL_STEP)
         writer.add_images('train/sample_plus/moving/axial', sample_plus[:, 0:1, :, sample_plus.size(3) // 2, ...], GLOBAL_STEP)
         writer.add_images('train/sample_plus/moving/coronal', sample_plus[:, 0:1, :, :, sample_plus.size(4) // 2], GLOBAL_STEP)
-    
+
     if wandb:
-        wandb_data = {'train/sample_plus/fixed': utils.plot_tensor(sample_plus[:, 1:2])}
-        wandb_data = {'train/sample_plus/moving': utils.plot_tensor(sample_plus[:, 0:1])}
+        wandb_data = {'train/sample_plus/fixed': utils.plot_tensor(sample_plus[:, 1:2]),
+                      'train/sample_plus/moving': utils.plot_tensor(sample_plus[:, 0:1]),
+                      f'train/epoch_{epoch}/sample_plus_energy': loss_array}
         wandb.log(wandb_data)
 
     plt.close('all')
@@ -201,10 +203,16 @@ def train(args):
     batch_size, no_workers, no_samples_per_epoch = config['batch_size'], config['no_workers'], config['no_samples_per_epoch']
     save_paths_dict = {'run_dir': args.out}
 
-    dataset_train = OasisDataset(save_paths_dict, config['im_pairs_train'], dims, config['data_path'])
+    if not args.multimodal:
+        dataset_train = OasisDataset(save_paths_dict, config['im_pairs_train'], dims, config['data_path'])
+    else:
+        dataset_train = MrCtDataset(save_paths=save_paths_dict, im_pairs=config['im_pairs_train'], dims=dims, data_path=config['data_path'])
     dataloader_train = Learn2RegDataLoader(dataset_train, batch_size, no_workers, no_samples_per_epoch)
 
-    dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
+    if not args.multimodal:
+        dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
+    else:
+        dataset_val = MrCtDataset(save_paths=save_paths_dict, im_pairs=os.path.join(save_paths_dict['run_dir'], 'val_pairs.csv'), dims=dims, data_path=config['data_path'])
     dataloader_val = Learn2RegDataLoader(dataset_val, 1, no_workers)
 
     structures_dict = dataset_train.structures_dict
@@ -572,8 +580,11 @@ if __name__ == '__main__':
     # argument parser
     parser = argparse.ArgumentParser(description='learnsim-EBM')
     # wandb args
-    parser.add_argument('--wandb', type=bool, default=False)
+    parser.add_argument('--wandb', action='store_true', default=False, help='')
+    parser.add_argument('--wandb-key', type=str, default='')
+    parser.add_argument('--wandb-entity', type=str, default='')
     parser.add_argument('--config', default=None, required=True, help='config file')
+    parser.add_argument('--multimodal', action='store_true', default=False, help='')
     parser.add_argument('--baseline', action='store_true', default=False, help='')
     parser.add_argument('--exp-name', default=None, help='experiment name')
     parser.add_argument('--pretrain-sim', dest='pretrain_sim', default=True, action='store_true')
@@ -586,6 +597,12 @@ if __name__ == '__main__':
 
     # training
     args = parser.parse_args()
+
+    try:
+        from polyaxon_client.tracking import get_outputs_path
+        args.out = get_outputs_path()
+    except Exception as e:
+        print("Probably not on IFL cluster")
 
     if args.wandb:
         wandb.login(key=args.wandb_key)

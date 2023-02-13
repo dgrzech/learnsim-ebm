@@ -1,0 +1,40 @@
+---
+version: 1
+
+kind: experiment
+
+framework: pytorch
+
+build:
+  image: pytorch/pytorch:1.9.0-cuda11.1-cudnn8-runtime
+  build_steps:
+    - apt update
+    - apt install -y libglib2.0-0 libsm6 libxext6 libxrender-dev
+    - apt install -y build-essential
+    - pip install -r requirements.txt
+
+params:
+  config_path: "./configs/mi/config_half_res_cluster.json"
+
+
+environment:
+ resources:
+   cpu:
+     requests: 5
+     limits: 10
+   memory:
+     requests: 10000
+     limits: 32768
+   gpu:
+     requests: 1
+     limits: 1
+
+run:
+  cmd: python train.py    --config {{ config_path }} \
+                          --exp-name test_mi \
+                          --baseline \
+                          --wandb \
+                          --wandb-key d3424a60f5e39087781fde8ff973ee92dd6da70d \
+                          --wandb-entity mfazampour \
+                          --multimodal
+
