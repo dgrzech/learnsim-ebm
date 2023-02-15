@@ -122,6 +122,9 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
         if config['loss_init'] == 'mi':
             sigma *= 0.25
 
+    if wandb:
+        loss_array = list()
+
     for _ in trange(1, no_samples_SGLD + 1, desc=f'sampling from EBM', colour='#808080', dynamic_ncols=True, leave=False, unit='sample'):
         sample_plus_noise = SGLD.apply(sample_plus, sigma, tau)
         loss_plus = sim(sample_plus_noise * fixed['mask'])
@@ -133,7 +136,10 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
 
         with torch.no_grad():
             writer.add_scalar(f'train/epoch_{epoch}/sample_plus_energy', loss_plus.item(), GLOBAL_STEP)
-            loss_array.append(loss_plus.item())
+
+            if wandb:
+                loss_array.append(loss_plus.item())
+
         GLOBAL_STEP += 1
 
     with torch.no_grad():
@@ -460,11 +466,11 @@ def train(args):
                     non_diffeomorphic_voxels = calc_no_non_diffeomorphic_voxels(model.get_T2())
                     non_diffeomorphic_voxels_pct = non_diffeomorphic_voxels / np.prod(fixed['im'].shape)
 
-                    dict.update({'train/train/loss_data': data_term.item(),
-                                 'train/train/loss_regularisation': reg_weight * reg_term.item(),
-                                 'train/train/loss_registration': loss_registration.item(),
-                                 'train/train/non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
-                                 'train/train/non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item()})
+                    log_dict.update({'train/train/loss_data': data_term.item(),
+                                     'train/train/loss_regularisation': reg_weight * reg_term.item(),
+                                     'train/train/loss_registration': loss_registration.item(),
+                                     'train/train/non_diffeomorphic_voxels': non_diffeomorphic_voxels.item(),
+                                     'train/train/non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct.item()})
 
                     grid_warped = model.warp_image(grid)
                     fixed_masked, moving_masked = fixed['im'] * fixed['mask'], moving['im'] * moving['mask']
