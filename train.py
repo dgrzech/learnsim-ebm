@@ -523,15 +523,7 @@ def train(args):
         # scheduler_sim.step()
 
         GLOBAL_STEP += 1
-
-        # tensorboard
-        if GLOBAL_STEP % config['log_period'] == 0:
-            with torch.no_grad():
-                log_dict['train/train/loss_similarity'] = loss_sim.item()
-
-                if args.wandb:
-                    wandb_data['train'].update(log_dict)
-
+        
         # VALIDATION
         if epoch == start_epoch or epoch % config['val_period'] == 0:
             enc.eval(), enc.disable_grads()
@@ -569,12 +561,16 @@ def train(args):
                 if args.wandb:
                     wandb_data['train'].update(log_dict)
 
+        # tensorboard
         if GLOBAL_STEP % config['log_period'] == 0:
             with torch.no_grad():
+                log_dict['train/train/loss_similarity'] = loss_sim.item()
+
                 for key, val in log_dict.items():
                     writer.add_scalar(key, val, global_step=GLOBAL_STEP)
                 
                 if args.wandb:
+                    wandb_data['train'].update(log_dict)
                     wandb.log(wandb_data)
 
                 plt.close('all')
