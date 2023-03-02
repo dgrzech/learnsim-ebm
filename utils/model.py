@@ -331,7 +331,7 @@ class Decoder(nn.Module, Model):
 
         self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
         self.cps = cps
-        self.register_buffer('grid', self.get_normalized_grid(input_size))
+        self.register_buffer('grid', self.get_normalized_grid(input_size), persistent=False)
 
         input_channels, no_dims = 2, 3
         use_bias = True
