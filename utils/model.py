@@ -242,24 +242,22 @@ class SimilarityMetric(nn.Module, Model):
         f = lambda x: spectral_norm(x) if cfg['spectral_norm'] else x
         self.stride = 2 if cfg['use_strided_conv'] else 1
 
-        self.conv1 = f(nn.Conv3d(1, 4, kernel_size=3, padding=1, bias=use_bias))
-        self.conv2 = f(nn.Conv3d(4, 4, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
-        self.conv3 = f(nn.Conv3d(4, 8, kernel_size=3, padding=1, bias=use_bias))
-        self.conv4 = f(nn.Conv3d(8, 8, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
-        self.conv5 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
-        self.conv6 = f(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
+        self.conv1 = f(nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias))
+        self.conv2 = f(nn.Conv3d(8, 8, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
+        self.conv3 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
+        self.conv4 = f(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
+        self.conv5 = f(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
+        self.conv6 = f(nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
 
         self.init = cfg['loss_init']
 
         if self.init == 'mi':
             self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv7 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias)
+            self.conv7 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias)
             self.up2 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv8 = nn.Conv3d(8, 8, kernel_size=3, padding=1, bias=use_bias)
+            self.conv8 = nn.Conv3d(16, 16, kernel_size=3, padding=1, bias=use_bias)
             self.up3 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv9 = nn.Conv3d(8, 4, kernel_size=3, padding=1, bias=use_bias)
-
-            self.mi_module = MI(sample_ratio=cfg['sample_ratio'])
+            self.conv9 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias)
 
     def _forward(self, input):
         y1 = self.activation_fn(self.conv1(input))
@@ -289,13 +287,12 @@ class SimilarityMetric(nn.Module, Model):
             diff = (im_fixed - im_moving_warped) ** 2
             z = self._forward(diff)
         elif self.init == 'mi':
-            z_fixed, z_moving_warped = rescale_im_intensity(self._forward(im_fixed)), rescale_im_intensity(self._forward(im_moving_warped))
-            z = self.mi_module(z_fixed, z_moving_warped)
+            z = self._forward(input)
 
         if reduction == 'mean':
-            return z.mean()
+            return -1.0 * (torch.exp(z.mean()) - 1.0)
         elif reduction == 'sum':
-            return z.sum()
+            return -1.0 * (torch.exp(z.sum()) - 1.0)
 
         raise NotImplementedError
 

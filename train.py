@@ -497,8 +497,8 @@ def train(args):
         dec.eval(), dec.disable_grads()
 
         moving_warped = model(torch.cat((moving['im'], fixed['im']), dim=1))
-        sample_plus = torch.cat((moving_warped, fixed['im']), dim=1)
-        sample_minus = generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer)
+        sample_plus = generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer)
+        sample_minus = torch.cat((moving['im'], fixed['im']), dim=1)
 
         sim.train(), sim.enable_grads()
         
@@ -564,6 +564,8 @@ def train(args):
         # tensorboard
         if GLOBAL_STEP % config['log_period'] == 0:
             with torch.no_grad():
+                log_dict['train/train/loss_plus'] = loss_plus.mean().item()
+                log_dict['train/train/loss_minus'] = loss_minus.mean().item()
                 log_dict['train/train/loss_similarity'] = loss_sim.item()
 
                 for key, val in log_dict.items():

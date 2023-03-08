@@ -27,7 +27,7 @@ class LCC(nn.Module):
 
 
 class MI(nn.Module):
-    def __init__(self, no_bins=64, normalised=True, sample_ratio=0.1, vmin=0.0, vmax=1.0):
+    def __init__(self, no_bins=64, normalised=False, sample_ratio=0.1, vmin=0.0, vmax=1.0):
         super(MI, self).__init__()
 
         self.normalised = normalised
