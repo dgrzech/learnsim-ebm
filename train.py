@@ -53,10 +53,6 @@ def set_up_model_and_preprocessing(args):
     optimizer_sim_pretrain = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim_pretrain'])
     optimizer_sim = torch.optim.Adam(list(model.submodules['sim'].parameters()), lr=config['lr_sim'])
 
-    # lr schedulers
-    scheduler_sim_pretrain = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim_pretrain, factor=config['sim_pretrain_schedule_factor'], patience=config['sim_pretrain_schedule_patience'])
-    scheduler_sim = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_sim, factor=config['sim_schedule_factor'], patience=config['sim_schedule_patience'])
-
     # resuming training
     if args.pretrained_stn is not None:
         with torch.no_grad():
@@ -82,13 +78,10 @@ def set_up_model_and_preprocessing(args):
         optimizer_sim_pretrain.load_state_dict(checkpoint['optimizer_sim_pretrain'])
         optimizer_sim.load_state_dict(checkpoint['optimizer_sim'])
 
-        scheduler_sim_pretrain.load_state_dict(checkpoint['scheduler_sim_pretrain'])
-        scheduler_sim.load_state_dict(checkpoint['scheduler_sim'])
-
     config_dict = {'config': config, 'loss_init': loss_init, 'model': model,
                    'optimizer_enc': optimizer_enc, 'optimizer_dec': optimizer_dec,
-                   'optimizer_sim_pretrain': optimizer_sim_pretrain, 'optimizer_sim': optimizer_sim,
-                   'scheduler_sim_pretrain': scheduler_sim_pretrain, 'scheduler_sim': scheduler_sim}
+                   'optimizer_sim_pretrain': optimizer_sim_pretrain, 'optimizer_sim': optimizer_sim}
+                   
     print(config_dict)
 
 
@@ -101,15 +94,10 @@ def generate_samples_from_EBM(config, epoch, model, sim, fixed, moving, writer, 
     no_samples_SGLD = config['no_samples_SGLD']
     
     def init_sample(config, fixed, moving, model):
-        if config['init_sample'] == 'rand':
-            sample = torch.cat(torch.rand_like(moving['im']), torch.rand_like(fixed['im']), dim=1).detach()
-        elif config['init_sample'] == 'fixed':
-            moving_warped = model(torch.cat((moving['im'], fixed['im']), dim=1))
-            sample = torch.cat((moving_warped.clone(), fixed['im'].clone()), dim=1).detach()
-        else:
-            raise NotImplementedError
-
+        moving_warped = model(torch.cat((moving['im'], fixed['im']), dim=1))
+        sample = torch.cat((moving_warped.clone(), fixed['im'].clone()), dim=1).detach()
         sample.requires_grad_(True)
+
         return sample
     
     sample = init_sample(config, fixed, moving, model)
@@ -189,7 +177,6 @@ def train(args):
 
     optimizer_enc, optimizer_dec = config_dict['optimizer_enc'], config_dict['optimizer_dec']
     optimizer_sim_pretrain, optimizer_sim = config_dict['optimizer_sim_pretrain'], config_dict['optimizer_sim']
-    scheduler_sim_pretrain, scheduler_sim = config_dict['scheduler_sim_pretrain'], config_dict['scheduler_sim']
 
     write_json(config, os.path.join(out_dir, 'config.json'))
 
@@ -212,12 +199,14 @@ def train(args):
         dataset_train = OasisDataset(save_paths_dict, config['im_pairs_train'], dims, config['data_path'])
     else:
         dataset_train = MrCtDataset(save_paths=save_paths_dict, im_pairs=config['im_pairs_train'], dims=dims, data_path=config['data_path'])
+
     dataloader_train = Learn2RegDataLoader(dataset_train, batch_size, no_workers, no_samples_per_epoch)
 
     if not args.multimodal:
         dataset_val = OasisDataset(save_paths_dict, config['im_pairs_val'], dims, config['data_path'])
     else:
         dataset_val = MrCtDataset(save_paths=save_paths_dict, im_pairs=os.path.join(save_paths_dict['run_dir'], 'val_pairs.csv'), dims=dims, data_path=config['data_path'])
+
     dataloader_val = Learn2RegDataLoader(dataset_val, 1, no_workers)
 
     structures_dict = dataset_train.structures_dict
@@ -307,26 +296,10 @@ def train(args):
                     no_samples = len(inputs) + len(inputs_rand)
                     loss_similarity = 0.0
                     
-                    if config['sim_pretrain_grads']:
-                        zero_disp = torch.zeros_like(dec.grid)
-                        zero_disp.requires_grad_(True)
-
                     for input in inputs + inputs_rand:
-                        if config['sim_pretrain_grads']:
-                            moving_warped = dec.warp_image(input[:, 0:1], disp=zero_disp)
-                            input_warped = torch.cat((moving_warped, input[:, 1:2]), dim=1)
-                        else:
-                            input_warped = input
-
-                        data_term_sim, data_term_sim_pred = loss_init(input_warped), sim(input_warped).sum()
+                        data_term_sim, data_term_sim_pred = loss_init(input), sim(input).sum()
                         loss_similarity += F.mse_loss(data_term_sim_pred, data_term_sim) / no_samples
                         
-                        if config['sim_pretrain_grads']:
-                           data_term_sim_grad = torch.autograd.grad(data_term_sim, zero_disp, retain_graph=True)[0]
-                           data_term_sim_pred_grad = torch.autograd.grad(data_term_sim_pred, zero_disp, retain_graph=True)[0]
-
-                           loss_similarity += F.mse_loss(data_term_sim_grad, data_term_sim_pred_grad) / no_samples
-
                     optimizer_sim_pretrain.zero_grad(set_to_none=True)
                     loss_similarity.backward()
                     optimizer_sim_pretrain.step()
@@ -417,7 +390,7 @@ def train(args):
 
                     plt.close('all')
                     
-            save_model(args, epoch, GLOBAL_STEP, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim, scheduler_sim_pretrain, scheduler_sim)
+            save_model(args, epoch, GLOBAL_STEP, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim)
 
     if args.baseline:
         return
@@ -520,7 +493,6 @@ def train(args):
         optimizer_sim.zero_grad(set_to_none=True)
         loss_sim.backward()
         optimizer_sim.step()
-        # scheduler_sim.step()
 
         GLOBAL_STEP += 1
         
@@ -549,8 +521,6 @@ def train(args):
                 non_diffeomorphic_voxels_mean = torch.mean(non_diffeomorphic_voxels)
                 non_diffeomorphic_voxels_pct_mean = torch.mean(non_diffeomorphic_voxels_pct)
 
-                # scheduler_sim.step(dsc_mean.mean())
-
                 log_dict.update({'train/val/metric_dsc_avg': dsc_mean.mean().item(),
                                  'train/val/non_diffeomorphic_voxels': non_diffeomorphic_voxels_mean.item(),
                                  'train/val/non_diffeomorphic_voxels_pct': non_diffeomorphic_voxels_pct_mean.item()})
@@ -577,7 +547,7 @@ def train(args):
 
                 plt.close('all')
 
-        save_model(args, epoch, GLOBAL_STEP, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim, scheduler_sim_pretrain, scheduler_sim)
+        save_model(args, epoch, GLOBAL_STEP, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim)
 
 
 if __name__ == '__main__':

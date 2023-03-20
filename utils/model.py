@@ -227,41 +227,30 @@ class SimilarityMetric(nn.Module, Model):
     def __init__(self, cfg):
         super(SimilarityMetric, self).__init__()
         
-        activation_fn = cfg['activation_fn_sim']
-        use_bias = True
-
-        if activation_fn == 'tanh':
-            self.activation_fn = lambda x: torch.tanh(x)
-        elif activation_fn == 'leaky_relu':
-            self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
-        elif activation_fn == 'relu':
-            self.activation_fn = lambda x: F.relu(x)
-        elif activation_fn == 'none':
-            self.activation_fn = lambda x: x
-
-        f = lambda x: spectral_norm(x) if cfg['spectral_norm'] else x
-        self.stride = 2 if cfg['use_strided_conv'] else 1
-
-        self.conv1 = f(nn.Conv3d(2, 8, kernel_size=3, padding=1, bias=use_bias))
-        self.conv2 = f(nn.Conv3d(8, 8, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
-        self.conv3 = f(nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=use_bias))
-        self.conv4 = f(nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
-        self.conv5 = f(nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=use_bias))
-        self.conv6 = f(nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=self.stride, bias=use_bias))
-        self.conv7 = f(nn.Conv3d(32, 64, kernel_size=3, padding=1, bias=use_bias))
-        self.conv8 = f(nn.Conv3d(64, 64, kernel_size=3, padding=1, bias=use_bias))
-
         self.init = cfg['loss_init']
+        input_channels = 1 if self.init == 'ssd' else 2
+
+        self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        self.stride = 2
+        self.use_bias = True
+
+        self.conv1 = nn.Conv3d(input_channels, 8, kernel_size=3, padding=1, bias=self.use_bias)
+        self.conv2 = nn.Conv3d(8, 8, kernel_size=3, padding=1, stride=self.stride, bias=self.use_bias)
+        self.conv3 = nn.Conv3d(8, 16, kernel_size=3, padding=1, bias=self.use_bias)
+        self.conv4 = nn.Conv3d(16, 16, kernel_size=3, padding=1, stride=self.stride, bias=self.use_bias)
+        self.conv5 = nn.Conv3d(16, 32, kernel_size=3, padding=1, bias=self.use_bias)
+        self.conv6 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=self.stride, bias=self.use_bias)
 
         if self.init == 'mi':
-            self.conv8 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=use_bias)
-            self.conv9 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
+            self.conv7 = nn.Conv3d(32, 64, kernel_size=3, padding=1, bias=self.use_bias)
+            self.conv8 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=self.use_bias)
+            self.conv9 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=self.use_bias)
             self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv10 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias)
+            self.conv10 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=self.use_bias)
             self.up2 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv11 = nn.Conv3d(16, 16, kernel_size=3, padding=1, bias=use_bias)
+            self.conv11 = nn.Conv3d(16, 16, kernel_size=3, padding=1, bias=self.use_bias)
             self.up3 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv12 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=use_bias)
+            self.conv12 = nn.Conv3d(16, 8, kernel_size=3, padding=1, bias=self.use_bias)
 
     def _forward(self, input):
         y1 = self.activation_fn(self.conv1(input))
@@ -270,12 +259,12 @@ class SimilarityMetric(nn.Module, Model):
         y4 = self.activation_fn(self.conv4(y3))
         y5 = self.activation_fn(self.conv5(y4))
         y6 = self.activation_fn(self.conv6(y5))
-        y7 = self.activation_fn(self.conv7(y6))
-        y8 = self.activation_fn(self.conv8(y7))
 
         if self.init == 'ssd':
             return y6
 
+        y7 = self.activation_fn(self.conv7(y6))
+        y8 = self.activation_fn(self.conv8(y7))
         y9 = self.activation_fn(self.conv9(y8))
         y9 = self.up1(y9)
         y10 = self.activation_fn(self.conv10(y9))
@@ -293,13 +282,18 @@ class SimilarityMetric(nn.Module, Model):
         if self.init == 'ssd':
             diff = (im_fixed - im_moving_warped) ** 2
             z = self._forward(diff)
+
+            if reduction == 'mean':
+                return z.mean()
+            elif reduction == 'sum':
+                return z.sum()
         elif self.init == 'mi':
             z = self._forward(input)
 
-        if reduction == 'mean':
-            return -1.0 * (torch.exp(z.mean()) - 1.0)
-        elif reduction == 'sum':
-            return -1.0 * (torch.exp(z.sum()) - 1.0)
+            if reduction == 'mean':
+                return -1.0 * (torch.exp(z.mean()) - 1.0)
+            elif reduction == 'sum':
+                return -1.0 * (torch.exp(z.sum()) - 1.0)
 
         raise NotImplementedError
 
@@ -309,15 +303,15 @@ class Encoder(nn.Module, Model):
         super(Encoder, self).__init__()
 
         input_channels, no_dims = 2, 3
-        use_bias = True
 
         self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
+        self.use_bias = True
 
-        self.conv1 = nn.Conv3d(input_channels, 16, kernel_size=3, padding=1, bias=use_bias)
-        self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
-        self.conv3 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
-        self.conv4 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
-        self.conv5 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=use_bias)
+        self.conv1 = nn.Conv3d(input_channels, 16, kernel_size=3, padding=1, bias=self.use_bias)
+        self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=2, bias=self.use_bias)
+        self.conv3 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=self.use_bias)
+        self.conv4 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=self.use_bias)
+        self.conv5 = nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=2, bias=self.use_bias)
 
     def forward(self, x):
         x2 = self.activation_fn(self.conv1(x))
@@ -335,28 +329,28 @@ class Decoder(nn.Module, Model):
 
         self.activation_fn = lambda x: F.leaky_relu(x, negative_slope=0.2)
         self.cps = cps
-        self.register_buffer('grid', self.get_normalized_grid(input_size), persistent=False)
+        self.use_bias = True
 
         input_channels, no_dims = 2, 3
-        use_bias = True
+        self.register_buffer('grid', self.get_normalized_grid(input_size), persistent=False)
 
         self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-        self.conv1 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=use_bias)
+        self.conv1 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=self.use_bias)
         self.up2 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-        self.conv2 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=use_bias)
+        self.conv2 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=self.use_bias)
         self.up3 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-        self.conv3 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=use_bias)
+        self.conv3 = nn.Conv3d(64, 32, kernel_size=3, padding=1, bias=self.use_bias)
 
         if self.cps is not None:
             self.evaluate_cubic_bspline_ffd = Cubic_B_spline_FFD_3D(dims=input_size, cps=cps)
-            self.conv4 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=use_bias)
+            self.conv4 = nn.Conv3d(32, 32, kernel_size=3, padding=1, bias=self.use_bias)
         else:
             self.up4 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-            self.conv4 = nn.Conv3d(48, 32, kernel_size=3, padding=1, bias=use_bias)
+            self.conv4 = nn.Conv3d(48, 32, kernel_size=3, padding=1, bias=self.use_bias)
 
-        self.conv5 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=use_bias)
-        self.conv6 = nn.Conv3d(16, 16, kernel_size=3, padding=1, bias=use_bias)
-        self.conv7 = nn.Conv3d(16, no_dims, kernel_size=3, padding=1, bias=use_bias)
+        self.conv5 = nn.Conv3d(32, 16, kernel_size=3, padding=1, bias=self.use_bias)
+        self.conv6 = nn.Conv3d(16, 16, kernel_size=3, padding=1, bias=self.use_bias)
+        self.conv7 = nn.Conv3d(16, no_dims, kernel_size=3, padding=1, bias=self.use_bias)
 
     def compute_disp(self, flow):
         # rescale flow to range of normalized grid

@@ -256,19 +256,17 @@ def plot_tensor(tensor: torch.Tensor, grid=False):
     return fig
 
 
-def save_model(args, epoch, step, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim, scheduler_sim_pretrain, scheduler_sim):
+def save_model(args, epoch, step, model, optimizer_enc, optimizer_dec, optimizer_sim_pretrain, optimizer_sim):
     path = os.path.join(args.model_dir, f'checkpoint_{epoch}.pt')
     state_dict = {'epoch': epoch, 'step': step, 'model': model.state_dict(),
                   'optimizer_enc': optimizer_enc.state_dict(), 'optimizer_dec': optimizer_dec.state_dict(),
-                  'optimizer_sim_pretrain': optimizer_sim_pretrain.state_dict(), 'optimizer_sim': optimizer_sim.state_dict(),
-                  'scheduler_sim_pretrain': scheduler_sim_pretrain.state_dict(), 'scheduler_sim': scheduler_sim.state_dict()}
+                  'optimizer_sim_pretrain': optimizer_sim_pretrain.state_dict(), 'optimizer_sim': optimizer_sim.state_dict()}
 
     torch.save(state_dict, path)
 
 
 def write_hparams(writer, config):
     hparams = ['epochs_pretrain_model', 'loss_init', 'alpha', 'reg_weight', 'lr', 'lr_sim_pretrain', 'lr_sim', 'tau',
-               # 'sim_pretrain_schedule_factor', 'sim_pretrain_schedule_patience', 'sim_schedule_factor', 'sim_schedule_patience',
                'batch_size', 'no_samples_per_epoch', 'no_samples_SGLD', 'dims']
     hparam_dict = dict(zip(hparams, [config[hparam] for hparam in hparams]))
 
