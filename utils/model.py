@@ -276,10 +276,10 @@ class SimilarityMetric(nn.Module, Model):
         return y12
 
     def forward(self, input, mask=None, reduction='mean'):
-        im_fixed = input[:, 1:2]
-        im_moving_warped = input[:, 0:1]
-        
         if self.init == 'ssd':
+            im_fixed = input[:, 1:2]
+            im_moving_warped = input[:, 0:1]
+        
             diff = (im_fixed - im_moving_warped) ** 2
             z = self._forward(diff)
 
