@@ -36,7 +36,7 @@ def set_up_model_and_preprocessing(args):
         lcc_module = LCC().to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
         loss_init = lambda x, y=None: lcc_module(x[:, 1:2], x[:, 0:1])
     elif config['loss_init'] == 'mi':
-        mi_module = MI().to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
+        mi_module = MI(config['sample_ratio']).to(DEVICE, memory_format=torch.channels_last_3d, non_blocking=True)
         loss_init = lambda x, y=None: mi_module(x[:, 1:2], x[:, 0:1])
     else:
         raise NotImplementedError(f'Loss {args.loss} not supported')
