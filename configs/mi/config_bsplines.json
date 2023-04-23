@@ -4,7 +4,7 @@
 	"loss_init": "mi",
 	"alpha": 0.02,
 	"reg_energy_type": "tikhonov",
-	"reg_weight": 150000.0,
+	"reg_weight": 300000.0,
 	"cps": [2, 2, 2],
 	"old": false,
 	"sample_ratio": 0.1,
